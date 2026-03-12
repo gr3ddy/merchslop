@@ -1,7 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { OrderStatus } from '@prisma/client';
 import { IsEnum, IsOptional, IsString } from 'class-validator';
-
-import { OrderStatus } from '../../../common/enums/domain.enum';
 
 export class UpdateOrderStatusDto {
   @ApiProperty({ enum: OrderStatus })
@@ -13,4 +12,3 @@ export class UpdateOrderStatusDto {
   @IsString()
   comment?: string;
 }
-

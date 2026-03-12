@@ -1,9 +1,11 @@
 import { Body, Controller, Get, Post } from '@nestjs/common';
-import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 
+import { CurrentActor } from '../../common/decorators/current-actor.decorator';
 import { DevActorHeaders } from '../../common/decorators/dev-actor-headers.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { UserRole } from '../../common/enums/domain.enum';
+import { RequestActor } from '../../common/interfaces/request-actor.interface';
 import { CreateProductDto } from './dto/create-product.dto';
 import { CatalogService } from './catalog.service';
 
@@ -21,9 +23,12 @@ export class CatalogController {
 
   @Post('products')
   @Roles(UserRole.PROGRAM_ADMIN)
-  @ApiOperation({ summary: 'Creates a product. Contract-first endpoint.' })
-  createProduct(@Body() payload: CreateProductDto) {
-    return this.catalogService.createProduct(payload);
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Creates a product in the catalog.' })
+  createProduct(
+    @Body() payload: CreateProductDto,
+    @CurrentActor() actor?: RequestActor,
+  ) {
+    return this.catalogService.createProduct(payload, actor);
   }
 }
-

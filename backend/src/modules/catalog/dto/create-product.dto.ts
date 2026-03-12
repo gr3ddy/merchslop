@@ -1,4 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ProductStatus } from '@prisma/client';
 import {
   IsBoolean,
   IsEnum,
@@ -9,8 +10,6 @@ import {
   IsUUID,
   Min,
 } from 'class-validator';
-
-import { ProductStatus } from '../../../common/enums/domain.enum';
 
 export class CreateProductDto {
   @ApiProperty()

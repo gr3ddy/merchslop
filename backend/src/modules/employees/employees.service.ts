@@ -3,7 +3,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { UserStatus } from '@prisma/client';
+import { EmployeeStatus, UserStatus } from '@prisma/client';
 
 import { RequestActor } from '../../common/interfaces/request-actor.interface';
 import { AuditService } from '../audit/audit.service';
@@ -185,7 +185,7 @@ export class EmployeesService {
           },
           data: {
             status:
-              payload.status === 'ACTIVE'
+              payload.status === EmployeeStatus.ACTIVE
                 ? UserStatus.ACTIVE
                 : UserStatus.DISABLED,
           },

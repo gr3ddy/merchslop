@@ -4,7 +4,12 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma, TransactionStatus, TransactionType } from '@prisma/client';
+import {
+  EmployeeStatus,
+  Prisma,
+  TransactionStatus,
+  TransactionType,
+} from '@prisma/client';
 
 import { RequestActor } from '../../common/interfaces/request-actor.interface';
 import { AuditService } from '../audit/audit.service';
@@ -42,7 +47,7 @@ export class TransactionsService {
         );
       }
 
-      if (employee.status !== 'ACTIVE') {
+      if (employee.status !== EmployeeStatus.ACTIVE) {
         throw new ConflictException('Cannot accrue points to inactive employee.');
       }
 
