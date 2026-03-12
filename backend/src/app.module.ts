@@ -17,6 +17,7 @@ import { HealthModule } from './modules/health/health.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { OrdersModule } from './modules/orders/orders.module';
 import { PrismaModule } from './modules/prisma/prisma.module';
+import { ReportsModule } from './modules/reports/reports.module';
 import { TransactionsModule } from './modules/transactions/transactions.module';
 
 @Module({
@@ -37,6 +38,7 @@ import { TransactionsModule } from './modules/transactions/transactions.module';
     TransactionsModule,
     CatalogModule,
     OrdersModule,
+    ReportsModule,
     NotificationsModule,
     AuditModule,
   ],
