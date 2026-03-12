@@ -4,7 +4,13 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { EmployeeStatus, ImportJobStatus, UserStatus } from '@prisma/client';
+import {
+  EmployeeStatus,
+  ImportJobStatus,
+  Prisma,
+  UserRole,
+  UserStatus,
+} from '@prisma/client';
 import * as XLSX from 'xlsx';
 
 import { RequestActor } from '../../common/interfaces/request-actor.interface';
@@ -43,6 +49,31 @@ type ParsedEmployeeImportRow = {
 type UploadedExcelFile = {
   originalname: string;
   buffer: Buffer;
+};
+
+type UserProvisioningCandidate = {
+  id: string;
+  role: UserRole;
+  status: UserStatus;
+  employeeId: string | null;
+  passwordHash: string | null;
+};
+
+type UserProvisioningPlan =
+  | {
+      action: 'create';
+    }
+  | {
+      action: 'bind';
+      userId: string;
+      currentStatus: UserStatus;
+      hasPassword: boolean;
+    };
+
+type UserProvisioningResult = {
+  action: 'created' | 'bound';
+  userId: string;
+  status: UserStatus;
 };
 
 @Injectable()
@@ -206,7 +237,7 @@ export class EmployeesService {
   async create(payload: CreateEmployeeDto, actor?: RequestActor) {
     const email = payload.email.toLowerCase();
 
-    const [employeeByNumber, employeeByEmail] = await Promise.all([
+    const [employeeByNumber, employeeByEmail, userByEmail] = await Promise.all([
       this.prisma.employee.findUnique({
         where: {
           employeeNumber: payload.employeeNumber,
@@ -223,6 +254,18 @@ export class EmployeesService {
           id: true,
         },
       }),
+      this.prisma.user.findUnique({
+        where: {
+          email,
+        },
+        select: {
+          id: true,
+          role: true,
+          status: true,
+          employeeId: true,
+          passwordHash: true,
+        },
+      }),
     ]);
 
     if (employeeByNumber) {
@@ -234,6 +277,8 @@ export class EmployeesService {
     if (employeeByEmail) {
       throw new ConflictException(`Employee email "${email}" already exists.`);
     }
+
+    const userProvisioningPlan = this.resolveUserProvisioningPlan(userByEmail, email);
 
     const employee = await this.prisma.$transaction(async (tx) => {
       const created = await tx.employee.create({
@@ -256,7 +301,15 @@ export class EmployeesService {
         },
       });
 
-      return tx.employee.findUniqueOrThrow({
+      const userProvisioning = await this.provisionLocalAccount(
+        tx,
+        created.id,
+        email,
+        created.status,
+        userProvisioningPlan,
+      );
+
+      const employeeWithUser = await tx.employee.findUniqueOrThrow({
         where: {
           id: created.id,
         },
@@ -273,20 +326,30 @@ export class EmployeesService {
           },
         },
       });
+
+      return {
+        employee: employeeWithUser,
+        userProvisioning,
+      };
     });
 
     await this.auditService.createEvent({
       actorId: actor?.userId ?? null,
       action: 'employee.created',
       entityType: 'Employee',
-      entityId: employee.id,
+      entityId: employee.employee.id,
       payload: {
-        employeeNumber: employee.employeeNumber,
-        email: employee.email,
+        employeeNumber: employee.employee.employeeNumber,
+        email: employee.employee.email,
+        localAccount: {
+          action: employee.userProvisioning.action,
+          userId: employee.userProvisioning.userId,
+          status: employee.userProvisioning.status,
+        },
       },
     });
 
-    return employee;
+    return employee.employee;
   }
 
   findAll() {
@@ -348,15 +411,18 @@ export class EmployeesService {
       });
 
       if (existing.user) {
+        const nextUserStatus = this.resolveEmployeeUserStatus(
+          payload.status,
+          existing.user.status,
+          Boolean(existing.user.passwordHash),
+        );
+
         await tx.user.update({
           where: {
             id: existing.user.id,
           },
           data: {
-            status:
-              payload.status === EmployeeStatus.ACTIVE
-                ? UserStatus.ACTIVE
-                : UserStatus.DISABLED,
+            status: nextUserStatus,
           },
         });
       }
@@ -705,5 +771,104 @@ export class EmployeesService {
 
   private isValidEmail(email: string): boolean {
     return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  }
+
+  private resolveUserProvisioningPlan(
+    user: UserProvisioningCandidate | null,
+    email: string,
+  ): UserProvisioningPlan {
+    if (!user) {
+      return {
+        action: 'create',
+      };
+    }
+
+    if (user.employeeId) {
+      throw new ConflictException(
+        `User with email "${email}" is already linked to another employee.`,
+      );
+    }
+
+    if (user.role !== UserRole.EMPLOYEE) {
+      throw new ConflictException(
+        `User with email "${email}" already exists with role "${user.role}" and cannot be linked automatically.`,
+      );
+    }
+
+    return {
+      action: 'bind',
+      userId: user.id,
+      currentStatus: user.status,
+      hasPassword: Boolean(user.passwordHash),
+    };
+  }
+
+  private async provisionLocalAccount(
+    tx: Prisma.TransactionClient,
+    employeeId: string,
+    email: string,
+    employeeStatus: EmployeeStatus,
+    plan: UserProvisioningPlan,
+  ): Promise<UserProvisioningResult> {
+    if (plan.action === 'create') {
+      const user = await tx.user.create({
+        data: {
+          email,
+          role: UserRole.EMPLOYEE,
+          employeeId,
+          status: this.resolveEmployeeUserStatus(employeeStatus),
+        },
+        select: {
+          id: true,
+          status: true,
+        },
+      });
+
+      return {
+        action: 'created',
+        userId: user.id,
+        status: user.status,
+      };
+    }
+
+    const user = await tx.user.update({
+      where: {
+        id: plan.userId,
+      },
+      data: {
+        employeeId,
+        status: this.resolveEmployeeUserStatus(
+          employeeStatus,
+          plan.currentStatus,
+          plan.hasPassword,
+        ),
+      },
+      select: {
+        id: true,
+        status: true,
+      },
+    });
+
+    return {
+      action: 'bound',
+      userId: user.id,
+      status: user.status,
+    };
+  }
+
+  private resolveEmployeeUserStatus(
+    employeeStatus: EmployeeStatus,
+    currentStatus?: UserStatus,
+    hasPassword = false,
+  ): UserStatus {
+    if (employeeStatus === EmployeeStatus.INACTIVE) {
+      return UserStatus.DISABLED;
+    }
+
+    if (!hasPassword || currentStatus === UserStatus.INVITED) {
+      return UserStatus.INVITED;
+    }
+
+    return UserStatus.ACTIVE;
   }
 }
