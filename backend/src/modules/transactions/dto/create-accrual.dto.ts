@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsNumber, IsOptional, IsString, IsUUID, MaxLength, Min } from 'class-validator';
+import { IsNumber, IsString, IsUUID, MaxLength, Min } from 'class-validator';
 
 export class CreateAccrualDto {
   @ApiProperty()
@@ -15,10 +15,8 @@ export class CreateAccrualDto {
   @IsString()
   reasonCode!: string;
 
-  @ApiProperty({ required: false })
-  @IsOptional()
+  @ApiProperty()
   @IsString()
   @MaxLength(500)
-  comment?: string;
+  comment!: string;
 }
-

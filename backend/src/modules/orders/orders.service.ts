@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import {
   EmployeeStatus,
+  NotificationType,
   OrderStatus,
   Prisma,
   ProductStatus,
@@ -16,6 +17,7 @@ import {
 import { UserRole } from '../../common/enums/domain.enum';
 import { RequestActor } from '../../common/interfaces/request-actor.interface';
 import { AuditService } from '../audit/audit.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
@@ -46,6 +48,7 @@ export class OrdersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly auditService: AuditService,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   async createOrder(actor: RequestActor | undefined, payload: CreateOrderDto) {
@@ -143,34 +146,6 @@ export class OrdersService {
         );
       }
 
-      for (const item of normalizedItems) {
-        const product = productMap.get(item.productId)!;
-
-        if (product.hasUnlimitedStock) {
-          continue;
-        }
-
-        const stockUpdate = await tx.product.updateMany({
-          where: {
-            id: product.id,
-            stockQty: {
-              gte: item.quantity,
-            },
-          },
-          data: {
-            stockQty: {
-              decrement: item.quantity,
-            },
-          },
-        });
-
-        if (stockUpdate.count === 0) {
-          throw new ConflictException(
-            `Failed to reserve stock for product "${product.title}".`,
-          );
-        }
-      }
-
       const createdOrder = await tx.order.create({
         data: {
           employeeId: employee.id,
@@ -223,6 +198,16 @@ export class OrdersService {
           reservedAmount: nextReserved,
         },
       });
+
+      await this.notificationsService.createForEmployee(
+        employee.id,
+        {
+          type: NotificationType.ORDER_CREATED,
+          title: 'Order created',
+          body: `Your order for ${totalAmount.toString()} points has been created and points are reserved.`,
+        },
+        tx,
+      );
 
       const order = await this.loadOrderDetails(tx, createdOrder.id);
 
@@ -344,6 +329,32 @@ export class OrdersService {
           );
         }
 
+        for (const item of order.items) {
+          if (item.product.hasUnlimitedStock) {
+            continue;
+          }
+
+          const stockUpdate = await tx.product.updateMany({
+            where: {
+              id: item.productId,
+              stockQty: {
+                gte: item.quantity,
+              },
+            },
+            data: {
+              stockQty: {
+                decrement: item.quantity,
+              },
+            },
+          });
+
+          if (stockUpdate.count === 0) {
+            throw new ConflictException(
+              `Failed to confirm stock for product "${item.product.title}".`,
+            );
+          }
+        }
+
         await tx.transaction.create({
           data: {
             employeeId: order.employeeId,
@@ -383,6 +394,16 @@ export class OrdersService {
             comment: payload.comment ?? order.comment,
           },
         });
+
+        await this.notificationsService.createForEmployee(
+          order.employeeId,
+          {
+            type: NotificationType.ORDER_CONFIRMED,
+            title: 'Order confirmed',
+            body: 'Your order has been confirmed and points were written off.',
+          },
+          tx,
+        );
       }
 
       if (payload.status === OrderStatus.ASSEMBLED) {
@@ -396,6 +417,18 @@ export class OrdersService {
             comment: payload.comment ?? order.comment,
           },
         });
+
+        await this.notificationsService.createForEmployee(
+          order.employeeId,
+          {
+            type: NotificationType.ORDER_ASSEMBLED,
+            title: 'Order assembled',
+            body: order.pickupPoint?.name
+              ? `Your order is ready for pickup at "${order.pickupPoint.name}".`
+              : 'Your order is ready for pickup.',
+          },
+          tx,
+        );
       }
 
       if (payload.status === OrderStatus.ISSUED) {
@@ -409,6 +442,16 @@ export class OrdersService {
             comment: payload.comment ?? order.comment,
           },
         });
+
+        await this.notificationsService.createForEmployee(
+          order.employeeId,
+          {
+            type: NotificationType.ORDER_ISSUED,
+            title: 'Order issued',
+            body: 'Your order has been issued.',
+          },
+          tx,
+        );
       }
 
       if (payload.status === OrderStatus.CANCELED) {
@@ -416,21 +459,23 @@ export class OrdersService {
           throw new ConflictException('Order already has a release transaction.');
         }
 
-        for (const item of order.items) {
-          if (item.product.hasUnlimitedStock) {
-            continue;
-          }
+        if (order.status !== OrderStatus.CREATED) {
+          for (const item of order.items) {
+            if (item.product.hasUnlimitedStock) {
+              continue;
+            }
 
-          await tx.product.update({
-            where: {
-              id: item.productId,
-            },
-            data: {
-              stockQty: {
-                increment: item.quantity,
+            await tx.product.update({
+              where: {
+                id: item.productId,
               },
-            },
-          });
+              data: {
+                stockQty: {
+                  increment: item.quantity,
+                },
+              },
+            });
+          }
         }
 
         const releaseSource = writeOffTransaction ?? reserveTransaction;
@@ -504,6 +549,19 @@ export class OrdersService {
             comment: payload.comment ?? order.comment,
           },
         });
+
+        await this.notificationsService.createForEmployee(
+          order.employeeId,
+          {
+            type: NotificationType.ORDER_CANCELED,
+            title: 'Order canceled',
+            body:
+              order.status === OrderStatus.CREATED
+                ? 'Your order was canceled and reserved points were released.'
+                : 'Your order was canceled and points were refunded.',
+          },
+          tx,
+        );
       }
 
       return this.loadOrderDetails(tx, order.id);

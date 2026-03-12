@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import {
   EmployeeStatus,
+  NotificationType,
   Prisma,
   TransactionStatus,
   TransactionType,
@@ -13,6 +14,7 @@ import {
 
 import { RequestActor } from '../../common/interfaces/request-actor.interface';
 import { AuditService } from '../audit/audit.service';
+import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateAccrualDto } from './dto/create-accrual.dto';
 import { CreateAdjustmentDto } from './dto/create-adjustment.dto';
@@ -22,6 +24,7 @@ export class TransactionsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly auditService: AuditService,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   async createAccrual(payload: CreateAccrualDto, actor?: RequestActor) {
@@ -95,6 +98,16 @@ export class TransactionsService {
           availableAmount: nextAvailable,
         },
       });
+
+      await this.notificationsService.createForEmployee(
+        employee.id,
+        {
+          type: NotificationType.BALANCE_ACCRUAL,
+          title: 'Points accrued',
+          body: `You received ${amount.toString()} points for "${reason.title}".`,
+        },
+        tx,
+      );
 
       return {
         transaction,
@@ -198,6 +211,18 @@ export class TransactionsService {
           availableAmount: nextAvailable,
         },
       });
+
+      await this.notificationsService.createForEmployee(
+        employee.id,
+        {
+          type: NotificationType.BALANCE_ADJUSTMENT,
+          title: 'Balance adjusted',
+          body: `Your balance was ${
+            amount.gt(0) ? 'increased' : 'decreased'
+          } by ${amount.abs().toString()} points for "${reason.title}".`,
+        },
+        tx,
+      );
 
       return {
         transaction,
