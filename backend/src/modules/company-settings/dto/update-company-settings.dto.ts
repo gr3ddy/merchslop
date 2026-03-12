@@ -54,6 +54,11 @@ export class UpdateCompanySettingsDto {
 
   @ApiPropertyOptional()
   @IsOptional()
+  @IsBoolean()
+  smtpEnabled?: boolean;
+
+  @ApiPropertyOptional()
+  @IsOptional()
   @IsInt()
   @Min(1)
   expirationMonths?: number;
@@ -71,4 +76,3 @@ export class UpdateCompanySettingsDto {
   @Type(() => UpdatePickupPointDto)
   pickupPoints?: UpdatePickupPointDto[];
 }
-

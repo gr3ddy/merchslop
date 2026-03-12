@@ -18,6 +18,20 @@ function requireNumberIfPresent(env: EnvironmentMap, key: string): void {
   }
 }
 
+function requireUrlIfPresent(env: EnvironmentMap, key: string): void {
+  const value = env[key];
+
+  if (value === undefined || value === '') {
+    return;
+  }
+
+  try {
+    new URL(value);
+  } catch {
+    throw new Error(`Environment variable "${key}" must be a valid URL.`);
+  }
+}
+
 export function validateEnvironment(
   config: Record<string, unknown>,
 ): Record<string, unknown> {
@@ -25,7 +39,8 @@ export function validateEnvironment(
 
   requireNonEmpty(env, 'DATABASE_URL');
   requireNumberIfPresent(env, 'PORT');
+  requireNumberIfPresent(env, 'SMTP_PORT');
+  requireUrlIfPresent(env, 'PUBLIC_APP_URL');
 
   return config;
 }
-

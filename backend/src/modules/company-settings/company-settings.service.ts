@@ -33,6 +33,7 @@ export class CompanySettingsService {
           companyName: payload.companyName,
           currencyName: payload.currencyName,
           primaryColor: payload.primaryColor,
+          smtpEnabled: payload.smtpEnabled,
           expirationMonths: payload.expirationMonths,
           expirationWarningDays: payload.expirationWarningDays,
         },
@@ -69,6 +70,7 @@ export class CompanySettingsService {
       payload: {
         companyName: updated.companyName,
         currencyName: updated.currencyName,
+        smtpEnabled: updated.smtpEnabled,
         expirationMonths: updated.expirationMonths,
         expirationWarningDays: updated.expirationWarningDays,
       },

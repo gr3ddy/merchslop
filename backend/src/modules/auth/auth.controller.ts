@@ -60,7 +60,7 @@ export class AuthController {
   @Roles(UserRole.PROGRAM_ADMIN)
   @ApiOperation({
     summary:
-      'Issues a password reset token for an active employee account. Intended for manual sharing or future email delivery.',
+      'Issues a password reset token for an active employee account and sends it by email when SMTP delivery is enabled.',
   })
   issuePasswordReset(
     @Body() payload: IssuePasswordResetDto,

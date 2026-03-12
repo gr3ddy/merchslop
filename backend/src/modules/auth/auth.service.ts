@@ -18,6 +18,7 @@ import { createHash, randomBytes } from 'node:crypto';
 
 import { RequestActor } from '../../common/interfaces/request-actor.interface';
 import { AuditService } from '../audit/audit.service';
+import { MailerService } from '../mailer/mailer.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { BootstrapAdminDto } from './dto/bootstrap-admin.dto';
 import { CompletePasswordActionDto } from './dto/complete-password-action.dto';
@@ -52,6 +53,7 @@ export class AuthService {
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
     private readonly auditService: AuditService,
+    private readonly mailerService: MailerService,
   ) {}
 
   async getSession(actor?: RequestActor): Promise<{
@@ -240,7 +242,7 @@ export class AuthService {
     const passwordHash = await this.hashPassword(payload.password);
     const updatedAt = new Date();
 
-    const user = await this.prisma.$transaction(async (tx) => {
+    const user = await this.prisma.runInSerializableTransaction(async (tx) => {
       await tx.passwordActionToken.update({
         where: {
           id: actionToken.id,
@@ -323,7 +325,7 @@ export class AuthService {
     const expiresAt = this.calculateTokenExpiry(type);
     const issuedAt = new Date();
 
-    const result = await this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.runInSerializableTransaction(async (tx) => {
       const employee = await tx.employee.findUnique({
         where: {
           id: employeeId,
@@ -408,6 +410,15 @@ export class AuthService {
       };
     });
 
+    const delivery = await this.mailerService.sendPasswordActionEmail({
+      to: result.user.email,
+      fullName: result.employee.fullName,
+      employeeNumber: result.employee.employeeNumber,
+      type,
+      token: plainToken,
+      expiresAt,
+    });
+
     await this.auditService.createEvent({
       actorId: actor?.userId ?? null,
       action:
@@ -423,12 +434,31 @@ export class AuthService {
         type,
         tokenId: result.actionTokenId,
         expiresAt,
+        deliveryMode: delivery.mode,
+        deliveryReason: delivery.reason,
+        emailSent: delivery.sent,
       },
     });
 
+    if (delivery.sent) {
+      await this.auditService.createEvent({
+        actorId: actor?.userId ?? null,
+        action: 'auth.password_action_email_sent',
+        entityType: 'User',
+        entityId: result.user.id,
+        payload: {
+          employeeId: result.employee.id,
+          type,
+          recipient: delivery.recipient,
+          messageId: delivery.messageId,
+        },
+      });
+    }
+
     return {
       type,
-      token: plainToken,
+      delivery: delivery.mode,
+      token: delivery.mode === 'manual' ? plainToken : undefined,
       expiresAt,
       user: {
         id: result.user.id,
@@ -438,10 +468,19 @@ export class AuthService {
         employeeNumber: result.employee.employeeNumber,
         fullName: result.employee.fullName,
       },
+      emailDelivery: {
+        sent: delivery.sent,
+        recipient: delivery.recipient,
+        reason: delivery.reason,
+      },
       message:
         type === PasswordActionTokenType.INVITE
-          ? 'Invite token issued successfully.'
-          : 'Password reset token issued successfully.',
+          ? delivery.mode === 'email'
+            ? 'Invite email sent successfully.'
+            : 'Invite token issued successfully.'
+          : delivery.mode === 'email'
+            ? 'Password reset email sent successfully.'
+            : 'Password reset token issued successfully.',
     };
   }
 

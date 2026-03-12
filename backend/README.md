@@ -79,9 +79,19 @@ npm run prisma:migrate:dev
 npm run start:dev
 ```
 
-## Следующий слой реализации
+## SMTP для invite/reset
 
-- создание employee user-аккаунтов и invite flow
-- импорт сотрудников из Excel
-- каталог и заказы с реальным persistence-слоем
-- workflow резервирования и списания баллов по заказам
+Чтобы invite/reset уходили по email, заполните SMTP-переменные в `.env` и включите `smtpEnabled` в `company-settings`:
+
+```bash
+curl -X PATCH http://localhost:3000/api/company-settings \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <admin-token>' \
+  -d '{"smtpEnabled":true}'
+```
+
+Если `smtpEnabled=false` или SMTP не сконфигурирован, backend сохраняет текущий fallback:
+
+- invite/reset endpoint-ы продолжают работать
+- plain token возвращается в API-ответе для ручной передачи сотруднику
+- при успешной email-доставке токен в ответ больше не возвращается

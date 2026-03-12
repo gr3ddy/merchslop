@@ -4,6 +4,7 @@ import { JwtModule } from '@nestjs/jwt';
 import type { StringValue } from 'ms';
 
 import { AuditModule } from '../audit/audit.module';
+import { MailerModule } from '../mailer/mailer.module';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 
@@ -11,6 +12,7 @@ import { AuthService } from './auth.service';
   imports: [
     ConfigModule,
     AuditModule,
+    MailerModule,
     JwtModule.registerAsync({
       global: true,
       inject: [ConfigService],
