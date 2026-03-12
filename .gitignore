@@ -1,0 +1,10 @@
+.DS_Store
+.env
+.env.local
+backend/.env
+
+backend/node_modules
+backend/dist
+backend/.nestjs-cache
+backend/coverage
+backend/prisma/dev.db
