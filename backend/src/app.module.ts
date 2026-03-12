@@ -1,4 +1,9 @@
-import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
+import {
+  MiddlewareConsumer,
+  Module,
+  NestModule,
+  RequestMethod,
+} from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
 import { ScheduleModule } from '@nestjs/schedule';
@@ -13,6 +18,7 @@ import { AuthModule } from './modules/auth/auth.module';
 import { CatalogModule } from './modules/catalog/catalog.module';
 import { CompanySettingsModule } from './modules/company-settings/company-settings.module';
 import { EmployeesModule } from './modules/employees/employees.module';
+import { ExpirationModule } from './modules/expiration/expiration.module';
 import { HealthModule } from './modules/health/health.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { OrdersModule } from './modules/orders/orders.module';
@@ -34,6 +40,7 @@ import { TransactionsModule } from './modules/transactions/transactions.module';
     AuthModule,
     CompanySettingsModule,
     EmployeesModule,
+    ExpirationModule,
     AccrualReasonsModule,
     TransactionsModule,
     CatalogModule,
@@ -51,6 +58,9 @@ import { TransactionsModule } from './modules/transactions/transactions.module';
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {
-    consumer.apply(RequestActorMiddleware).forRoutes('*');
+    consumer.apply(RequestActorMiddleware).forRoutes({
+      path: '*path',
+      method: RequestMethod.ALL,
+    });
   }
 }

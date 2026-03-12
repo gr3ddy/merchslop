@@ -17,6 +17,7 @@ import {
 import { UserRole } from '../../common/enums/domain.enum';
 import { RequestActor } from '../../common/interfaces/request-actor.interface';
 import { AuditService } from '../audit/audit.service';
+import { LedgerAllocation, LedgerService } from '../ledger/ledger.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateOrderDto } from './dto/create-order.dto';
@@ -48,6 +49,7 @@ export class OrdersService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly auditService: AuditService,
+    private readonly ledgerService: LedgerService,
     private readonly notificationsService: NotificationsService,
   ) {}
 
@@ -60,166 +62,148 @@ export class OrdersService {
 
     const normalizedItems = this.normalizeItems(payload);
 
-    const result = await this.prisma.$transaction(async (tx) => {
-      const employee = await tx.employee.findUnique({
-        where: {
-          id: actor.employeeId,
-        },
-        include: {
-          balanceSnapshot: true,
-        },
-      });
-
-      if (!employee) {
-        throw new NotFoundException(
-          `Employee "${actor.employeeId}" was not found.`,
-        );
-      }
-
-      if (employee.status !== EmployeeStatus.ACTIVE) {
-        throw new ConflictException('Inactive employee cannot create an order.');
-      }
-
-      if (payload.pickupPointId) {
-        const pickupPoint = await tx.pickupPoint.findUnique({
+    const result = await this.prisma.runInSerializableTransaction(
+      async (tx) => {
+        const employee = await tx.employee.findUnique({
           where: {
-            id: payload.pickupPointId,
+            id: actor.employeeId,
+          },
+          include: {
+            balanceSnapshot: true,
           },
         });
 
-        if (!pickupPoint || !pickupPoint.isActive) {
+        if (!employee) {
           throw new NotFoundException(
-            `Pickup point "${payload.pickupPointId}" is not available.`,
+            `Employee "${actor.employeeId}" was not found.`,
           );
         }
-      }
 
-      const products = await tx.product.findMany({
-        where: {
-          id: {
-            in: normalizedItems.map((item) => item.productId),
+        if (employee.status !== EmployeeStatus.ACTIVE) {
+          throw new ConflictException('Inactive employee cannot create an order.');
+        }
+
+        if (payload.pickupPointId) {
+          const pickupPoint = await tx.pickupPoint.findUnique({
+            where: {
+              id: payload.pickupPointId,
+            },
+          });
+
+          if (!pickupPoint || !pickupPoint.isActive) {
+            throw new NotFoundException(
+              `Pickup point "${payload.pickupPointId}" is not available.`,
+            );
+          }
+        }
+
+        const products = await tx.product.findMany({
+          where: {
+            id: {
+              in: normalizedItems.map((item) => item.productId),
+            },
           },
-        },
-      });
+        });
 
-      if (products.length !== normalizedItems.length) {
-        throw new NotFoundException('One or more ordered products were not found.');
-      }
+        if (products.length !== normalizedItems.length) {
+          throw new NotFoundException('One or more ordered products were not found.');
+        }
 
-      const productMap = new Map(products.map((product) => [product.id, product]));
-      let totalAmount = new Prisma.Decimal(0);
+        const productMap = new Map(products.map((product) => [product.id, product]));
+        let totalAmount = new Prisma.Decimal(0);
 
-      for (const item of normalizedItems) {
-        const product = productMap.get(item.productId);
+        for (const item of normalizedItems) {
+          const product = productMap.get(item.productId);
 
-        if (!product) {
-          throw new NotFoundException(
-            `Product "${item.productId}" was not found.`,
+          if (!product) {
+            throw new NotFoundException(
+              `Product "${item.productId}" was not found.`,
+            );
+          }
+
+          if (product.status !== ProductStatus.ACTIVE) {
+            throw new ConflictException(
+              `Product "${product.title}" is not available for ordering.`,
+            );
+          }
+
+          if (!product.hasUnlimitedStock && product.stockQty < item.quantity) {
+            throw new ConflictException(
+              `Not enough stock for product "${product.title}".`,
+            );
+          }
+
+          totalAmount = totalAmount.add(
+            product.pricePoints.mul(new Prisma.Decimal(item.quantity)),
           );
         }
 
-        if (product.status !== ProductStatus.ACTIVE) {
-          throw new ConflictException(
-            `Product "${product.title}" is not available for ordering.`,
+        const reserveAllocations =
+          await this.ledgerService.allocateEmployeeAvailableBalance(
+            employee.id,
+            totalAmount,
+            tx,
           );
-        }
 
-        if (!product.hasUnlimitedStock && product.stockQty < item.quantity) {
-          throw new ConflictException(
-            `Not enough stock for product "${product.title}".`,
-          );
-        }
+        const createdOrder = await tx.order.create({
+          data: {
+            employeeId: employee.id,
+            status: OrderStatus.CREATED,
+            pickupPointId: payload.pickupPointId,
+            reservedAmount: totalAmount,
+            totalAmount,
+            comment: payload.comment,
+            items: {
+              create: normalizedItems.map((item) => {
+                const product = productMap.get(item.productId)!;
 
-        totalAmount = totalAmount.add(
-          product.pricePoints.mul(new Prisma.Decimal(item.quantity)),
-        );
-      }
+                return {
+                  productId: product.id,
+                  quantity: item.quantity,
+                  pricePoints: product.pricePoints,
+                };
+              }),
+            },
+          },
+        });
 
-      const currentAvailable =
-        employee.balanceSnapshot?.availableAmount ?? new Prisma.Decimal(0);
-      const currentReserved =
-        employee.balanceSnapshot?.reservedAmount ?? new Prisma.Decimal(0);
-
-      if (currentAvailable.lt(totalAmount)) {
-        throw new ConflictException(
-          'Insufficient available balance to create this order.',
-        );
-      }
-
-      const createdOrder = await tx.order.create({
-        data: {
-          employeeId: employee.id,
-          status: OrderStatus.CREATED,
-          pickupPointId: payload.pickupPointId,
-          reservedAmount: totalAmount,
-          totalAmount,
-          comment: payload.comment,
-          items: {
-            create: normalizedItems.map((item) => {
-              const product = productMap.get(item.productId)!;
-
-              return {
-                productId: product.id,
-                quantity: item.quantity,
-                pricePoints: product.pricePoints,
-              };
+        const reserveTransaction = await tx.transaction.create({
+          data: {
+            employeeId: employee.id,
+            authorId: actor.userId,
+            orderId: createdOrder.id,
+            type: TransactionType.RESERVE,
+            status: TransactionStatus.CONFIRMED,
+            amount: totalAmount,
+            comment: 'Points reserved for order creation.',
+            metadata: this.buildLedgerMetadata({
+              allocations: reserveAllocations,
             }),
+            effectiveAt: new Date(),
           },
-        },
-      });
+        });
 
-      const reserveTransaction = await tx.transaction.create({
-        data: {
-          employeeId: employee.id,
-          authorId: actor.userId,
-          orderId: createdOrder.id,
-          type: TransactionType.RESERVE,
-          status: TransactionStatus.CONFIRMED,
-          amount: totalAmount,
-          comment: 'Points reserved for order creation.',
-          effectiveAt: new Date(),
-        },
-      });
+        const balance = await this.ledgerService.rebuildEmployeeSnapshot(employee.id, tx);
 
-      const nextAvailable = currentAvailable.sub(totalAmount);
-      const nextReserved = currentReserved.add(totalAmount);
+        await this.notificationsService.createForEmployee(
+          employee.id,
+          {
+            type: NotificationType.ORDER_CREATED,
+            title: 'Order created',
+            body: `Your order for ${totalAmount.toString()} points has been created and points are reserved.`,
+          },
+          tx,
+        );
 
-      await tx.balanceSnapshot.upsert({
-        where: {
-          employeeId: employee.id,
-        },
-        create: {
-          employeeId: employee.id,
-          availableAmount: nextAvailable,
-          reservedAmount: nextReserved,
-        },
-        update: {
-          availableAmount: nextAvailable,
-          reservedAmount: nextReserved,
-        },
-      });
+        const order = await this.loadOrderDetails(tx, createdOrder.id);
 
-      await this.notificationsService.createForEmployee(
-        employee.id,
-        {
-          type: NotificationType.ORDER_CREATED,
-          title: 'Order created',
-          body: `Your order for ${totalAmount.toString()} points has been created and points are reserved.`,
-        },
-        tx,
-      );
-
-      const order = await this.loadOrderDetails(tx, createdOrder.id);
-
-      return {
-        order,
-        reserveTransactionId: reserveTransaction.id,
-        balance: {
-          availableAmount: nextAvailable,
-          reservedAmount: nextReserved,
-        },
-      };
-    });
+        return {
+          order,
+          reserveTransactionId: reserveTransaction.id,
+          balance,
+        };
+      },
+    );
 
     await this.auditService.createEvent({
       actorId: actor.userId,
@@ -286,286 +270,244 @@ export class OrdersService {
       );
     }
 
-    const result = await this.prisma.$transaction(async (tx) => {
-      const order = await this.loadOrderDetails(tx, orderId);
+    const result = await this.prisma.runInSerializableTransaction(
+      async (tx) => {
+        const order = await this.loadOrderDetails(tx, orderId);
 
-      if (payload.status === order.status) {
-        throw new BadRequestException(
-          `Order is already in status "${order.status}".`,
+        if (payload.status === order.status) {
+          throw new BadRequestException(
+            `Order is already in status "${order.status}".`,
+          );
+        }
+
+        this.assertTransition(order.status, payload.status);
+
+        const reserveTransaction = order.transactions.find(
+          (transaction) => transaction.type === TransactionType.RESERVE,
         );
-      }
+        const writeOffTransaction = order.transactions.find(
+          (transaction) => transaction.type === TransactionType.WRITE_OFF,
+        );
+        const releaseTransaction = order.transactions.find(
+          (transaction) => transaction.type === TransactionType.RELEASE,
+        );
 
-      this.assertTransition(order.status, payload.status);
-
-      const reserveTransaction = order.transactions.find(
-        (transaction) => transaction.type === TransactionType.RESERVE,
-      );
-      const writeOffTransaction = order.transactions.find(
-        (transaction) => transaction.type === TransactionType.WRITE_OFF,
-      );
-      const releaseTransaction = order.transactions.find(
-        (transaction) => transaction.type === TransactionType.RELEASE,
-      );
-
-      const currentAvailable =
-        order.employee.balanceSnapshot?.availableAmount ?? new Prisma.Decimal(0);
-      const currentReserved =
-        order.employee.balanceSnapshot?.reservedAmount ?? new Prisma.Decimal(0);
-
-      if (payload.status === OrderStatus.CONFIRMED) {
-        if (!reserveTransaction) {
-          throw new ConflictException('Reserve transaction is missing for order.');
-        }
-
-        if (writeOffTransaction) {
-          throw new ConflictException(
-            'Order already has a write-off transaction.',
-          );
-        }
-
-        if (currentReserved.lt(order.totalAmount)) {
-          throw new ConflictException(
-            'Reserved balance is inconsistent for this order.',
-          );
-        }
-
-        for (const item of order.items) {
-          if (item.product.hasUnlimitedStock) {
-            continue;
+        if (payload.status === OrderStatus.CONFIRMED) {
+          if (!reserveTransaction) {
+            throw new ConflictException('Reserve transaction is missing for order.');
           }
 
-          const stockUpdate = await tx.product.updateMany({
-            where: {
-              id: item.productId,
-              stockQty: {
-                gte: item.quantity,
-              },
-            },
-            data: {
-              stockQty: {
-                decrement: item.quantity,
-              },
-            },
-          });
-
-          if (stockUpdate.count === 0) {
+          if (writeOffTransaction) {
             throw new ConflictException(
-              `Failed to confirm stock for product "${item.product.title}".`,
+              'Order already has a write-off transaction.',
             );
           }
-        }
 
-        await tx.transaction.create({
-          data: {
-            employeeId: order.employeeId,
-            authorId: actor.userId,
-            orderId: order.id,
-            type: TransactionType.WRITE_OFF,
-            status: TransactionStatus.CONFIRMED,
-            amount: order.totalAmount,
-            sourceTransactionId: reserveTransaction.id,
-            comment: payload.comment ?? 'Order confirmed and points written off.',
-            effectiveAt: new Date(),
-          },
-        });
-
-        await tx.balanceSnapshot.upsert({
-          where: {
-            employeeId: order.employeeId,
-          },
-          create: {
-            employeeId: order.employeeId,
-            availableAmount: currentAvailable,
-            reservedAmount: currentReserved.sub(order.totalAmount),
-          },
-          update: {
-            reservedAmount: currentReserved.sub(order.totalAmount),
-          },
-        });
-
-        await tx.order.update({
-          where: {
-            id: order.id,
-          },
-          data: {
-            status: OrderStatus.CONFIRMED,
-            confirmedAt: new Date(),
-            reservedAmount: new Prisma.Decimal(0),
-            comment: payload.comment ?? order.comment,
-          },
-        });
-
-        await this.notificationsService.createForEmployee(
-          order.employeeId,
-          {
-            type: NotificationType.ORDER_CONFIRMED,
-            title: 'Order confirmed',
-            body: 'Your order has been confirmed and points were written off.',
-          },
-          tx,
-        );
-      }
-
-      if (payload.status === OrderStatus.ASSEMBLED) {
-        await tx.order.update({
-          where: {
-            id: order.id,
-          },
-          data: {
-            status: OrderStatus.ASSEMBLED,
-            assembledAt: new Date(),
-            comment: payload.comment ?? order.comment,
-          },
-        });
-
-        await this.notificationsService.createForEmployee(
-          order.employeeId,
-          {
-            type: NotificationType.ORDER_ASSEMBLED,
-            title: 'Order assembled',
-            body: order.pickupPoint?.name
-              ? `Your order is ready for pickup at "${order.pickupPoint.name}".`
-              : 'Your order is ready for pickup.',
-          },
-          tx,
-        );
-      }
-
-      if (payload.status === OrderStatus.ISSUED) {
-        await tx.order.update({
-          where: {
-            id: order.id,
-          },
-          data: {
-            status: OrderStatus.ISSUED,
-            issuedAt: new Date(),
-            comment: payload.comment ?? order.comment,
-          },
-        });
-
-        await this.notificationsService.createForEmployee(
-          order.employeeId,
-          {
-            type: NotificationType.ORDER_ISSUED,
-            title: 'Order issued',
-            body: 'Your order has been issued.',
-          },
-          tx,
-        );
-      }
-
-      if (payload.status === OrderStatus.CANCELED) {
-        if (releaseTransaction) {
-          throw new ConflictException('Order already has a release transaction.');
-        }
-
-        if (order.status !== OrderStatus.CREATED) {
           for (const item of order.items) {
             if (item.product.hasUnlimitedStock) {
               continue;
             }
 
-            await tx.product.update({
+            const stockUpdate = await tx.product.updateMany({
               where: {
                 id: item.productId,
+                stockQty: {
+                  gte: item.quantity,
+                },
               },
               data: {
                 stockQty: {
-                  increment: item.quantity,
+                  decrement: item.quantity,
                 },
               },
             });
+
+            if (stockUpdate.count === 0) {
+              throw new ConflictException(
+                `Failed to confirm stock for product "${item.product.title}".`,
+              );
+            }
           }
-        }
 
-        const releaseSource = writeOffTransaction ?? reserveTransaction;
-
-        if (!releaseSource) {
-          throw new ConflictException(
-            'Cannot cancel order without reserve or write-off transaction.',
-          );
-        }
-
-        const nextAvailable = currentAvailable.add(order.totalAmount);
-        const nextReserved =
-          order.status === OrderStatus.CREATED
-            ? currentReserved.sub(order.totalAmount)
-            : currentReserved;
-
-        if (nextReserved.lt(0)) {
-          throw new ConflictException(
-            'Reserved balance would become negative after cancel.',
-          );
-        }
-
-        await tx.transaction.create({
-          data: {
-            employeeId: order.employeeId,
-            authorId: actor.userId,
-            orderId: order.id,
-            type: TransactionType.RELEASE,
-            status: TransactionStatus.CONFIRMED,
-            amount: order.totalAmount,
-            sourceTransactionId: releaseSource.id,
-            comment:
-              payload.comment ??
-              (order.status === OrderStatus.CREATED
-                ? 'Order canceled and reserve released.'
-                : 'Order canceled and points refunded.'),
-            metadata: {
-              mode:
-                order.status === OrderStatus.CREATED
-                  ? 'reserve_release'
-                  : 'refund_after_write_off',
+          await tx.transaction.create({
+            data: {
+              employeeId: order.employeeId,
+              authorId: actor.userId,
+              orderId: order.id,
+              type: TransactionType.WRITE_OFF,
+              status: TransactionStatus.CONFIRMED,
+              amount: order.totalAmount,
+              sourceTransactionId: reserveTransaction.id,
+              comment: payload.comment ?? 'Order confirmed and points written off.',
+              metadata: this.buildLedgerMetadata({
+                allocations: this.extractLinkedAllocations(reserveTransaction.metadata),
+              }),
+              effectiveAt: new Date(),
             },
-            effectiveAt: new Date(),
-          },
-        });
+          });
 
-        await tx.balanceSnapshot.upsert({
-          where: {
-            employeeId: order.employeeId,
-          },
-          create: {
-            employeeId: order.employeeId,
-            availableAmount: nextAvailable,
-            reservedAmount: nextReserved,
-          },
-          update: {
-            availableAmount: nextAvailable,
-            reservedAmount: nextReserved,
-          },
-        });
+          await this.ledgerService.rebuildEmployeeSnapshot(order.employeeId, tx);
 
-        await tx.order.update({
-          where: {
-            id: order.id,
-          },
-          data: {
-            status: OrderStatus.CANCELED,
-            canceledAt: new Date(),
-            canceledById: actor.userId,
-            reservedAmount: new Prisma.Decimal(0),
-            comment: payload.comment ?? order.comment,
-          },
-        });
+          await tx.order.update({
+            where: {
+              id: order.id,
+            },
+            data: {
+              status: OrderStatus.CONFIRMED,
+              confirmedAt: new Date(),
+              reservedAmount: new Prisma.Decimal(0),
+              comment: payload.comment ?? order.comment,
+            },
+          });
 
-        await this.notificationsService.createForEmployee(
-          order.employeeId,
-          {
-            type: NotificationType.ORDER_CANCELED,
-            title: 'Order canceled',
-            body:
-              order.status === OrderStatus.CREATED
-                ? 'Your order was canceled and reserved points were released.'
-                : 'Your order was canceled and points were refunded.',
-          },
-          tx,
-        );
-      }
+          await this.notificationsService.createForEmployee(
+            order.employeeId,
+            {
+              type: NotificationType.ORDER_CONFIRMED,
+              title: 'Order confirmed',
+              body: 'Your order has been confirmed and points were written off.',
+            },
+            tx,
+          );
+        }
 
-      return this.loadOrderDetails(tx, order.id);
-    });
+        if (payload.status === OrderStatus.ASSEMBLED) {
+          await tx.order.update({
+            where: {
+              id: order.id,
+            },
+            data: {
+              status: OrderStatus.ASSEMBLED,
+              assembledAt: new Date(),
+              comment: payload.comment ?? order.comment,
+            },
+          });
+
+          await this.notificationsService.createForEmployee(
+            order.employeeId,
+            {
+              type: NotificationType.ORDER_ASSEMBLED,
+              title: 'Order assembled',
+              body: order.pickupPoint?.name
+                ? `Your order is ready for pickup at "${order.pickupPoint.name}".`
+                : 'Your order is ready for pickup.',
+            },
+            tx,
+          );
+        }
+
+        if (payload.status === OrderStatus.ISSUED) {
+          await tx.order.update({
+            where: {
+              id: order.id,
+            },
+            data: {
+              status: OrderStatus.ISSUED,
+              issuedAt: new Date(),
+              comment: payload.comment ?? order.comment,
+            },
+          });
+
+          await this.notificationsService.createForEmployee(
+            order.employeeId,
+            {
+              type: NotificationType.ORDER_ISSUED,
+              title: 'Order issued',
+              body: 'Your order has been issued.',
+            },
+            tx,
+          );
+        }
+
+        if (payload.status === OrderStatus.CANCELED) {
+          if (releaseTransaction) {
+            throw new ConflictException('Order already has a release transaction.');
+          }
+
+          if (order.status !== OrderStatus.CREATED) {
+            for (const item of order.items) {
+              if (item.product.hasUnlimitedStock) {
+                continue;
+              }
+
+              await tx.product.update({
+                where: {
+                  id: item.productId,
+                },
+                data: {
+                  stockQty: {
+                    increment: item.quantity,
+                  },
+                },
+              });
+            }
+          }
+
+          const releaseSource = writeOffTransaction ?? reserveTransaction;
+
+          if (!releaseSource) {
+            throw new ConflictException(
+              'Cannot cancel order without reserve or write-off transaction.',
+            );
+          }
+
+          await tx.transaction.create({
+            data: {
+              employeeId: order.employeeId,
+              authorId: actor.userId,
+              orderId: order.id,
+              type: TransactionType.RELEASE,
+              status: TransactionStatus.CONFIRMED,
+              amount: order.totalAmount,
+              sourceTransactionId: releaseSource.id,
+              comment:
+                payload.comment ??
+                (order.status === OrderStatus.CREATED
+                  ? 'Order canceled and reserve released.'
+                  : 'Order canceled and points refunded.'),
+              metadata: this.buildLedgerMetadata({
+                mode:
+                  order.status === OrderStatus.CREATED
+                    ? 'reserve_release'
+                    : 'refund_after_write_off',
+                allocations: this.extractLinkedAllocations(releaseSource.metadata),
+              }),
+              effectiveAt: new Date(),
+            },
+          });
+
+          await this.ledgerService.rebuildEmployeeSnapshot(order.employeeId, tx);
+
+          await tx.order.update({
+            where: {
+              id: order.id,
+            },
+            data: {
+              status: OrderStatus.CANCELED,
+              canceledAt: new Date(),
+              canceledById: actor.userId,
+              reservedAmount: new Prisma.Decimal(0),
+              comment: payload.comment ?? order.comment,
+            },
+          });
+
+          await this.notificationsService.createForEmployee(
+            order.employeeId,
+            {
+              type: NotificationType.ORDER_CANCELED,
+              title: 'Order canceled',
+              body:
+                order.status === OrderStatus.CREATED
+                  ? 'Your order was canceled and reserved points were released.'
+                  : 'Your order was canceled and points were refunded.',
+            },
+            tx,
+          );
+        }
+
+        return this.loadOrderDetails(tx, order.id);
+      },
+    );
 
     await this.auditService.createEvent({
       actorId: actor.userId,
@@ -614,6 +556,57 @@ export class OrdersService {
         `Transition from "${current}" to "${next}" is not allowed.`,
       );
     }
+  }
+
+  private extractLinkedAllocations(metadata: Prisma.JsonValue | null): LedgerAllocation[] {
+    if (
+      !metadata ||
+      typeof metadata !== 'object' ||
+      Array.isArray(metadata) ||
+      !('allocations' in metadata) ||
+      !Array.isArray(metadata.allocations)
+    ) {
+      return [];
+    }
+
+    return metadata.allocations.flatMap((allocation): LedgerAllocation[] => {
+      if (
+        !allocation ||
+        typeof allocation !== 'object' ||
+        Array.isArray(allocation) ||
+        typeof allocation.sourceTransactionId !== 'string' ||
+        typeof allocation.amount !== 'string'
+      ) {
+        return [];
+      }
+
+      return [
+        {
+          sourceTransactionId: allocation.sourceTransactionId,
+          amount: allocation.amount,
+          expiresAt:
+            allocation.expiresAt && typeof allocation.expiresAt === 'string'
+              ? allocation.expiresAt
+              : null,
+        },
+      ];
+    });
+  }
+
+  private buildLedgerMetadata(input: {
+    allocations?: LedgerAllocation[];
+    mode?: 'reserve_release' | 'refund_after_write_off';
+  }): Prisma.InputJsonValue | typeof Prisma.JsonNull {
+    const hasAllocations = (input.allocations?.length ?? 0) > 0;
+
+    if (!input.mode && !hasAllocations) {
+      return Prisma.JsonNull;
+    }
+
+    return {
+      ...(input.mode ? { mode: input.mode } : {}),
+      ...(hasAllocations ? { allocations: input.allocations } : {}),
+    };
   }
 
   private loadOrderDetails(

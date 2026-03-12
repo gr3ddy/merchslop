@@ -6,6 +6,7 @@ import { DevActorHeaders } from '../../common/decorators/dev-actor-headers.decor
 import { Roles } from '../../common/decorators/roles.decorator';
 import { UserRole } from '../../common/enums/domain.enum';
 import { ListBalanceReportQueryDto } from './dto/list-balance-report-query.dto';
+import { ListExpirationReportQueryDto } from './dto/list-expiration-report-query.dto';
 import { ListOrderReportQueryDto } from './dto/list-order-report-query.dto';
 import { ListTransactionReportQueryDto } from './dto/list-transaction-report-query.dto';
 import { ReportsService } from './reports.service';
@@ -67,6 +68,23 @@ export class ReportsController {
   ): Promise<void> {
     const csv = await this.reportsService.exportOrdersCsv(query);
     this.sendCsv(response, 'orders-report.csv', csv);
+  }
+
+  @Get('expirations')
+  @ApiOperation({ summary: 'Lists expired points report.' })
+  listExpirations(@Query() query: ListExpirationReportQueryDto) {
+    return this.reportsService.listExpirations(query);
+  }
+
+  @Get('expirations/export')
+  @ApiProduces('text/csv')
+  @ApiOperation({ summary: 'Exports expired points report as CSV.' })
+  async exportExpirations(
+    @Query() query: ListExpirationReportQueryDto,
+    @Res() response: Response,
+  ): Promise<void> {
+    const csv = await this.reportsService.exportExpirationsCsv(query);
+    this.sendCsv(response, 'expirations-report.csv', csv);
   }
 
   private sendCsv(response: Response, fileName: string, csv: string): void {

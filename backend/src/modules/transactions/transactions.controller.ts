@@ -1,4 +1,4 @@
-import { Body, Controller, Post } from '@nestjs/common';
+import { Body, Controller, Param, ParseUUIDPipe, Post } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 
 import { CurrentActor } from '../../common/decorators/current-actor.decorator';
@@ -34,5 +34,14 @@ export class TransactionsController {
     @CurrentActor() actor?: RequestActor,
   ) {
     return this.transactionsService.createAdjustment(payload, actor);
+  }
+
+  @Post('rebuild-balance/:employeeId')
+  @ApiOperation({ summary: 'Rebuilds employee balance snapshot from confirmed ledger.' })
+  rebuildBalance(
+    @Param('employeeId', new ParseUUIDPipe()) employeeId: string,
+    @CurrentActor() actor?: RequestActor,
+  ) {
+    return this.transactionsService.rebuildBalance(employeeId, actor);
   }
 }

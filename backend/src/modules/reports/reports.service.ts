@@ -1,8 +1,9 @@
 import { Injectable } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { Prisma, TransactionStatus, TransactionType } from '@prisma/client';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { ListBalanceReportQueryDto } from './dto/list-balance-report-query.dto';
+import { ListExpirationReportQueryDto } from './dto/list-expiration-report-query.dto';
 import { ListOrderReportQueryDto } from './dto/list-order-report-query.dto';
 import { ListTransactionReportQueryDto } from './dto/list-transaction-report-query.dto';
 
@@ -247,6 +248,64 @@ export class ReportsService {
     );
   }
 
+  listExpirations(query: ListExpirationReportQueryDto) {
+    return this.prisma.transaction.findMany({
+      where: {
+        employeeId: query.employeeId,
+        type: TransactionType.EXPIRATION,
+        status: TransactionStatus.CONFIRMED,
+        effectiveAt: this.buildDateRange(query.dateFrom, query.dateTo),
+      },
+      orderBy: [{ effectiveAt: 'desc' }, { createdAt: 'desc' }],
+      include: {
+        employee: true,
+        author: {
+          select: {
+            id: true,
+            email: true,
+          },
+        },
+      },
+    });
+  }
+
+  async exportExpirationsCsv(
+    query: ListExpirationReportQueryDto,
+  ): Promise<string> {
+    const expirations = await this.listExpirations(query);
+
+    return this.serializeCsv(
+      [
+        'transactionId',
+        'effectiveAt',
+        'createdAt',
+        'employeeId',
+        'employeeNumber',
+        'employeeName',
+        'amount',
+        'authorId',
+        'authorEmail',
+        'sourceTransactionId',
+        'expiredLots',
+        'comment',
+      ],
+      expirations.map((transaction) => ({
+        transactionId: transaction.id,
+        effectiveAt: this.formatDate(transaction.effectiveAt),
+        createdAt: this.formatDate(transaction.createdAt),
+        employeeId: transaction.employeeId,
+        employeeNumber: transaction.employee.employeeNumber,
+        employeeName: transaction.employee.fullName,
+        amount: transaction.amount.toString(),
+        authorId: transaction.author?.id ?? '',
+        authorEmail: transaction.author?.email ?? '',
+        sourceTransactionId: transaction.sourceTransactionId ?? '',
+        expiredLots: this.formatExpirationLots(transaction.metadata),
+        comment: transaction.comment ?? '',
+      })),
+    );
+  }
+
   private buildDateRange(
     dateFrom?: string,
     dateTo?: string,
@@ -300,5 +359,42 @@ export class ReportsService {
 
   private formatDate(value?: Date | null): string {
     return value ? value.toISOString() : '';
+  }
+
+  private formatExpirationLots(metadata: Prisma.JsonValue | null): string {
+    if (
+      !metadata ||
+      typeof metadata !== 'object' ||
+      Array.isArray(metadata) ||
+      !('allocations' in metadata) ||
+      !Array.isArray(metadata.allocations)
+    ) {
+      return '';
+    }
+
+    return metadata.allocations
+      .flatMap((allocation) => {
+        if (
+          !allocation ||
+          typeof allocation !== 'object' ||
+          Array.isArray(allocation) ||
+          typeof allocation.sourceTransactionId !== 'string' ||
+          typeof allocation.amount !== 'string'
+        ) {
+          return [];
+        }
+
+        const expiresAt =
+          allocation.expiresAt && typeof allocation.expiresAt === 'string'
+            ? allocation.expiresAt
+            : '';
+
+        return [
+          `${allocation.sourceTransactionId}:${allocation.amount}${
+            expiresAt ? `@${expiresAt}` : ''
+          }`,
+        ];
+      })
+      .join('; ');
   }
 }
