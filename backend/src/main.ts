@@ -1,6 +1,10 @@
+import { mkdir } from 'node:fs/promises';
+import { resolve } from 'node:path';
+
 import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
+import { NestExpressApplication } from '@nestjs/platform-express';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
 
@@ -8,7 +12,7 @@ import { AppModule } from './app.module';
 import { PrismaService } from './modules/prisma/prisma.service';
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule, {
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     bufferLogs: true,
   });
 
@@ -18,8 +22,21 @@ async function bootstrap(): Promise<void> {
   const appName = configService.get<string>('app.name') ?? 'Merchshop Backend';
   const port = configService.get<number>('app.port') ?? 3000;
   const prismaService = app.get(PrismaService);
+  const uploadsRoot = resolve(process.cwd(), 'uploads');
 
-  app.use(helmet());
+  await mkdir(uploadsRoot, { recursive: true });
+
+  app.use(
+    helmet({
+      // Frontend can load product images from backend static assets.
+      crossOriginResourcePolicy: {
+        policy: 'cross-origin',
+      },
+    }),
+  );
+  app.useStaticAssets(uploadsRoot, {
+    prefix: '/uploads/',
+  });
   app.setGlobalPrefix(apiPrefix);
   app.useGlobalPipes(
     new ValidationPipe({

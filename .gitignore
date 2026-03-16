@@ -7,4 +7,5 @@ backend/node_modules
 backend/dist
 backend/.nestjs-cache
 backend/coverage
+backend/uploads
 backend/prisma/dev.db

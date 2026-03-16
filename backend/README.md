@@ -95,3 +95,11 @@ curl -X PATCH http://localhost:3000/api/company-settings \
 - invite/reset endpoint-ы продолжают работать
 - plain token возвращается в API-ответе для ручной передачи сотруднику
 - при успешной email-доставке токен в ответ больше не возвращается
+
+## Static assets для каталога
+
+Загруженные изображения товаров раздаются backend-ом как static assets по пути `/uploads/*`.
+
+- файлы сохраняются в `backend/uploads/catalog/...`
+- поле `filePath` у `ProductImage` можно использовать как публичный путь относительно backend origin
+- пример: если `filePath` равен `uploads/catalog/<productId>/<file>`, то публичный URL будет `http://localhost:3000/uploads/catalog/<productId>/<file>`
