@@ -79,6 +79,24 @@ npm run prisma:migrate:dev
 npm run start:dev
 ```
 
+## Critical automated tests
+
+Минимальный e2e-baseline на ключевые бизнес-потоки можно прогнать так:
+
+```bash
+npm run test:critical
+```
+
+Что проверяется:
+
+- employee onboarding через `invite -> password complete -> reset password`
+- заказ через `reserve -> confirm -> cancel`
+- `expiration warning` и `expiration sweep`
+- `notifications` summary/read flow
+- базовый happy path каталога
+
+Для запуска нужен доступный PostgreSQL по `DATABASE_URL` из `.env`.
+
 ## SMTP для invite/reset
 
 Чтобы invite/reset уходили по email, заполните SMTP-переменные в `.env` и включите `smtpEnabled` в `company-settings`:

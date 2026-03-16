@@ -205,14 +205,19 @@ export class LedgerService {
       }
 
       if (transaction.type === TransactionType.EXPIRATION) {
+        const metadataLots = this.extractMetadataLots(transaction.metadata);
         const expiredLots =
-          this.extractMetadataLots(transaction.metadata).length > 0
-            ? this.extractMetadataLots(transaction.metadata)
+          metadataLots.length > 0
+            ? metadataLots
             : this.consumeLotsByReference(
                 availableLots,
                 transaction.sourceTransactionId,
                 transaction.amount,
               );
+
+        if (metadataLots.length > 0) {
+          this.consumeSpecificLots(availableLots, metadataLots);
+        }
 
         this.assertLotsMatchTransaction(transaction, expiredLots);
       }

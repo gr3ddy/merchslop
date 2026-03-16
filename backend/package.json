@@ -11,6 +11,7 @@
     "postinstall": "prisma generate",
     "start": "node dist/main.js",
     "start:dev": "nest start --watch",
+    "test:critical": "npm run build && node --env-file=.env --test test/critical-flows.test.mjs",
     "format": "prettier --write \"src/**/*.ts\" \"prisma/**/*.prisma\"",
     "prisma:generate": "prisma generate",
     "prisma:migrate:dev": "prisma migrate dev"
