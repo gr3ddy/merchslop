@@ -1,4 +1,8 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { NotificationType, Prisma } from '@prisma/client';
 
 import { PrismaService } from '../prisma/prisma.service';
@@ -16,18 +20,87 @@ export class NotificationsService {
   constructor(private readonly prisma: PrismaService) {}
 
   getMyNotifications(userId?: string) {
-    if (!userId) {
-      throw new BadRequestException(
-        'User context is required to list notifications.',
-      );
-    }
+    const resolvedUserId = this.requireUserId(userId);
 
     return this.prisma.notification.findMany({
       where: {
-        userId,
+        userId: resolvedUserId,
       },
       orderBy: [{ createdAt: 'desc' }],
     });
+  }
+
+  async getMyNotificationSummary(userId?: string) {
+    const resolvedUserId = this.requireUserId(userId);
+
+    const [totalCount, unreadCount] = await Promise.all([
+      this.prisma.notification.count({
+        where: {
+          userId: resolvedUserId,
+        },
+      }),
+      this.prisma.notification.count({
+        where: {
+          userId: resolvedUserId,
+          readAt: null,
+        },
+      }),
+    ]);
+
+    return {
+      totalCount,
+      unreadCount,
+    };
+  }
+
+  async markMyNotificationAsRead(notificationId: string, userId?: string) {
+    const resolvedUserId = this.requireUserId(userId);
+
+    const notification = await this.prisma.notification.findFirst({
+      where: {
+        id: notificationId,
+        userId: resolvedUserId,
+      },
+    });
+
+    if (!notification) {
+      throw new NotFoundException(
+        `Notification "${notificationId}" was not found.`,
+      );
+    }
+
+    if (notification.readAt) {
+      return notification;
+    }
+
+    return this.prisma.notification.update({
+      where: {
+        id: notification.id,
+      },
+      data: {
+        readAt: new Date(),
+      },
+    });
+  }
+
+  async markAllMyNotificationsAsRead(userId?: string) {
+    const resolvedUserId = this.requireUserId(userId);
+    const readAt = new Date();
+
+    const result = await this.prisma.notification.updateMany({
+      where: {
+        userId: resolvedUserId,
+        readAt: null,
+      },
+      data: {
+        readAt,
+      },
+    });
+
+    return {
+      updatedCount: result.count,
+      readAt,
+    };
   }
 
   async createForEmployee(
@@ -65,5 +138,15 @@ export class NotificationsService {
         sentAt: new Date(),
       },
     });
+  }
+
+  private requireUserId(userId?: string): string {
+    if (!userId) {
+      throw new BadRequestException(
+        'User context is required to access notifications.',
+      );
+    }
+
+    return userId;
   }
 }
