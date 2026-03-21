@@ -127,6 +127,39 @@ describe('critical backend flows', { concurrency: false }, () => {
     assert.equal(employeeLogin.data.user.id, inviteCompletion.data.user.id);
   });
 
+  test('health, readiness and error responses expose request identifiers', async () => {
+    const customRequestId = 'req-health-check';
+
+    const healthResponse = await api('GET', '/api/health', {
+      headers: {
+        'x-request-id': customRequestId,
+      },
+    });
+
+    assertStatus(healthResponse, 200);
+    assert.equal(healthResponse.headers.get('x-request-id'), customRequestId);
+    assert.equal(healthResponse.data.status, 'ok');
+
+    const readinessResponse = await api('GET', '/api/health/ready');
+
+    assertStatus(readinessResponse, 200);
+    assert.ok(readinessResponse.headers.get('x-request-id'));
+    assert.equal(readinessResponse.data.status, 'ok');
+    assert.equal(readinessResponse.data.checks.database, 'up');
+
+    const notFoundResponse = await api('GET', '/api/does-not-exist', {
+      headers: {
+        'x-request-id': 'req-not-found',
+      },
+    });
+
+    assertStatus(notFoundResponse, 404);
+    assert.equal(notFoundResponse.headers.get('x-request-id'), 'req-not-found');
+    assert.equal(notFoundResponse.data.requestId, 'req-not-found');
+    assert.equal(notFoundResponse.data.statusCode, 404);
+    assert.equal(notFoundResponse.data.path, '/api/does-not-exist');
+  });
+
   test('order reserve -> confirm -> cancel keeps balance and stock consistent', async () => {
     const { admin } = await bootstrapAdminAndLogin();
     const adminHeaders = buildAdminHeaders(admin.id);

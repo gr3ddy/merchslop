@@ -5,11 +5,13 @@ import {
   RequestMethod,
 } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-import { APP_GUARD } from '@nestjs/core';
+import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { ScheduleModule } from '@nestjs/schedule';
 
+import { HttpExceptionLoggingFilter } from './common/filters/http-exception-logging.filter';
 import { RolesGuard } from './common/guards/roles.guard';
 import { RequestActorMiddleware } from './common/middleware/request-actor.middleware';
+import { RequestContextMiddleware } from './common/middleware/request-context.middleware';
 import appConfig from './config/app.config';
 import { validateEnvironment } from './config/env.validation';
 import { AuditModule } from './modules/audit/audit.module';
@@ -56,11 +58,17 @@ import { TransactionsModule } from './modules/transactions/transactions.module';
       provide: APP_GUARD,
       useClass: RolesGuard,
     },
+    {
+      provide: APP_FILTER,
+      useClass: HttpExceptionLoggingFilter,
+    },
   ],
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {
-    consumer.apply(RequestActorMiddleware).forRoutes({
+    consumer
+      .apply(RequestContextMiddleware, RequestActorMiddleware)
+      .forRoutes({
       path: '*path',
       method: RequestMethod.ALL,
     });

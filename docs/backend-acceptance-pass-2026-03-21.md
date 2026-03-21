@@ -17,12 +17,13 @@ Acceptance-pass выполнен для `backend`-контура `Merchshop MVP`
 
 ## Verification Baseline
 
-- `npm run test:critical` — `9/9 pass`
+- `npm run test:critical` — `10/10 pass`
 - ранее зафиксированный ручной smoke: [docs/smoke-test-report-2026-03-12.md](./smoke-test-report-2026-03-12.md)
 - live SMTP smoke-test against temporary `Mailpit` on `2026-03-21` — business emails for accrual, orders and expiration confirmed
 
 Текущий automated baseline покрывает:
 
+- health, readiness and request-id/error-tracking baseline
 - employee onboarding: `invite -> password complete -> reset`
 - order flow: `reserve -> confirm -> cancel`
 - persisted cart: item storage, metadata update and checkout into `Order`
@@ -35,13 +36,13 @@ Acceptance-pass выполнен для `backend`-контура `Merchshop MVP`
 
 ## Acceptance Summary
 
-Итоговый статус backend на текущем этапе: `accepted with reservations`.
+Итоговый статус backend на текущем этапе: `accepted`.
 
 Это означает:
 
 - backend закрывает основное MVP-ядро
-- обязательные бизнес-правила backend-слоя выглядят выполненными
-- есть несколько открытых оговорок, которые не ломают основной контур, но важны для финального product acceptance
+- обязательные бизнес-правила backend-слоя выполнены
+- минимальный `P1 hardening package` для текущей стадии тоже закрыт
 
 ## MVP Checklist Status
 
@@ -59,6 +60,7 @@ Acceptance-pass выполнен для `backend`-контура `Merchshop MVP`
 | Отчеты и экспорт | Done | balances, transactions, orders, expirations, CSV export |
 | Сгорание | Done | global settings, warning scheduler, expiration scheduler, report по expirations |
 | Аудит | Done | критичные действия по балансу, каталогу, заказам, import/auth flow аудируются |
+| Monitoring / error tracking | Done | readiness endpoint, `x-request-id`, structured request logs, standardized error responses |
 | Critical automated tests | Done | ключевые бизнес-потоки покрыты и проходят |
 
 ## Business Rules Check
@@ -76,25 +78,8 @@ Acceptance-pass выполнен для `backend`-контура `Merchshop MVP`
 | 9. Неактивный сотрудник не может войти и оформить заказ | Done | status checks есть в auth/orders flow |
 | 10. Критичные admin-действия аудируются | Done | balance/catalog/order/import/auth events присутствуют |
 
-## Open Reservations
-
-### 1. P1 hardening еще открыт
-
-Не закрыты пункты из `P1. Усиление решения`:
-
-- monitoring/error tracking
-
-Что уже закрыто в этом блоке:
-
-- checklist backup/restore в [docs/backend-backup-restore-checklist.md](./backend-backup-restore-checklist.md)
-- дополнительные ограничения и валидация upload-ов
-
-Это не блокирует backend MVP core, но блокирует production-hardening acceptance.
-
 ## Decision
 
-На текущем срезе backend можно считать `MVP-ready` для основной доменной логики и внутренних интеграционных работ.
+На текущем срезе backend можно считать `MVP-ready` для основной доменной логики и базового production-hardening.
 
-Для полного acceptance без оговорок рекомендовано закрыть:
-
-1. Минимальный P1 hardening package
+Итоговый статус backend на этой стадии: `accepted`.

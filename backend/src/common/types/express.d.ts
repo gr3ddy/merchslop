@@ -4,9 +4,10 @@ declare global {
   namespace Express {
     interface Request {
       actor?: RequestActor;
+      requestId?: string;
+      requestStartedAt?: number;
     }
   }
 }
 
 export {};
-
