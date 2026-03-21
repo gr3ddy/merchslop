@@ -1,7 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PasswordActionTokenType } from '@prisma/client';
-import nodemailer, { Transporter } from 'nodemailer';
+import * as nodemailer from 'nodemailer';
+import { Transporter } from 'nodemailer';
 
 import { CompanySettingsService } from '../company-settings/company-settings.service';
 

@@ -19,6 +19,7 @@ Acceptance-pass выполнен для `backend`-контура `Merchshop MVP`
 
 - `npm run test:critical` — `7/7 pass`
 - ранее зафиксированный ручной smoke: [docs/smoke-test-report-2026-03-12.md](./smoke-test-report-2026-03-12.md)
+- live SMTP smoke-test against temporary `Mailpit` on `2026-03-21` — business emails for accrual, orders and expiration confirmed
 
 Текущий automated baseline покрывает:
 
@@ -74,25 +75,13 @@ Acceptance-pass выполнен для `backend`-контура `Merchshop MVP`
 
 ## Open Reservations
 
-### 1. Реальная SMTP-доставка еще не smoke-verified
-
-В `MVP` базовые email-уведомления backend-слоя реализованы. Сейчас в коде SMTP-слой используется для:
-
-- `invite`
-- `reset-password`
-- начислений и корректировок
-- статусов заказа
-- предупреждений о сгорании и факта сгорания
-
-Но в текущем окружении это еще не было проверено против живого SMTP-сервера с реальной доставкой письма.
-
-### 2. Cart трактуется как implicit checkout, а не отдельная persisted сущность
+### 1. Cart трактуется как implicit checkout, а не отдельная persisted сущность
 
 Заказ оформляется напрямую через `POST /orders` с набором items. С точки зрения backend checkout работает, но отдельной сохраненной `cart`-модели или cart endpoint-ов нет.
 
 Если читать пункт `корзина и checkout` строго как требование отдельной persisted корзины, это остается открытой оговоркой. Если корзина допускается как frontend/session concern, backend-часть можно считать достаточной.
 
-### 3. P1 hardening еще открыт
+### 2. P1 hardening еще открыт
 
 Не закрыты пункты из `P1. Усиление решения`:
 
@@ -108,6 +97,5 @@ Acceptance-pass выполнен для `backend`-контура `Merchshop MVP`
 
 Для полного acceptance без оговорок рекомендовано закрыть:
 
-1. Live SMTP smoke-test с реальным SMTP-сервером
-2. Явное решение по трактовке `cart` в MVP
-3. Минимальный P1 hardening package
+1. Явное решение по трактовке `cart` в MVP
+2. Минимальный P1 hardening package
