@@ -91,6 +91,7 @@ npm run test:critical
 
 - employee onboarding через `invite -> password complete -> reset password`
 - заказ через `reserve -> confirm -> cancel`
+- persisted cart: сохранение items, pickup point/comment и checkout в `Order`
 - `expiration warning` и `expiration sweep`
 - `notifications` summary/read flow
 - базовый happy path каталога
@@ -132,3 +133,24 @@ curl -X PATCH http://localhost:3000/api/company-settings \
 - файлы сохраняются в `backend/uploads/catalog/...`
 - поле `filePath` у `ProductImage` можно использовать как публичный путь относительно backend origin
 - пример: если `filePath` равен `uploads/catalog/<productId>/<file>`, то публичный URL будет `http://localhost:3000/uploads/catalog/<productId>/<file>`
+
+## Persisted cart
+
+Backend теперь поддерживает отдельную сохраненную корзину сотрудника.
+
+Доступные endpoint-ы:
+
+- `GET /api/cart`
+- `PATCH /api/cart`
+- `PUT /api/cart/items/:productId`
+- `DELETE /api/cart/items/:productId`
+- `DELETE /api/cart`
+- `POST /api/cart/checkout`
+
+Что хранится в корзине:
+
+- позиции `CartItem`
+- выбранный `pickupPointId`
+- комментарий к будущему checkout
+
+`POST /api/cart/checkout` использует ту же order-логику, что и прямой `POST /api/orders`, но берет items и checkout metadata из persisted корзины и очищает ее после успешного создания заказа.

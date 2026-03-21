@@ -296,6 +296,157 @@ describe('critical backend flows', { concurrency: false }, () => {
     );
   });
 
+  test('persisted cart stores items and metadata until checkout clears it into an order', async () => {
+    const { admin } = await bootstrapAdminAndLogin();
+    const adminHeaders = buildAdminHeaders(admin.id);
+    const employee = await createEmployee({
+      headers: adminHeaders,
+      payload: {
+        employeeNumber: 'E2E-002-CART',
+        fullName: 'Cart Employee',
+        email: 'employee.cart@example.com',
+        department: 'Marketplace',
+      },
+    });
+
+    assert.ok(employee.user, 'Employee should have a linked local account.');
+
+    await prisma.accrualReason.create({
+      data: {
+        code: 'CART_TEST',
+        title: 'Cart Test Reason',
+        appliesToAccrual: true,
+      },
+    });
+    await prisma.companySettings.create({
+      data: {
+        id: 'default',
+        companyName: 'Cart Test Company',
+      },
+    });
+
+    const pickupPoint = await prisma.pickupPoint.create({
+      data: {
+        name: 'Main pickup point',
+      },
+    });
+    const [productA, productB] = await Promise.all([
+      prisma.product.create({
+        data: {
+          sku: 'CART-SKU-001',
+          title: 'Cart Hoodie',
+          pricePoints: 30,
+          stockQty: 5,
+        },
+      }),
+      prisma.product.create({
+        data: {
+          sku: 'CART-SKU-002',
+          title: 'Cart Mug',
+          pricePoints: 20,
+          stockQty: 5,
+        },
+      }),
+    ]);
+
+    const accrualResponse = await api('POST', '/api/transactions/accruals', {
+      headers: adminHeaders,
+      json: {
+        employeeId: employee.id,
+        amount: 150,
+        reasonCode: 'CART_TEST',
+        comment: 'Seed balance for persisted cart flow.',
+      },
+    });
+
+    assertStatus(accrualResponse, [200, 201]);
+
+    const employeeHeaders = buildEmployeeHeaders(employee.user.id, employee.id);
+    const initialCartResponse = await api('GET', '/api/cart', {
+      headers: employeeHeaders,
+    });
+
+    assertStatus(initialCartResponse, 200);
+    assert.equal(initialCartResponse.data.itemCount, 0);
+    assert.equal(initialCartResponse.data.items.length, 0);
+
+    const updateCartResponse = await api('PATCH', '/api/cart', {
+      headers: employeeHeaders,
+      json: {
+        pickupPointId: pickupPoint.id,
+        comment: 'Use persisted cart checkout.',
+      },
+    });
+
+    assertStatus(updateCartResponse, 200);
+    assert.equal(updateCartResponse.data.pickupPointId, pickupPoint.id);
+    assert.equal(updateCartResponse.data.comment, 'Use persisted cart checkout.');
+
+    const cartItemAResponse = await api(
+      'PUT',
+      `/api/cart/items/${productA.id}`,
+      {
+        headers: employeeHeaders,
+        json: {
+          quantity: 2,
+        },
+      },
+    );
+    const cartItemBResponse = await api(
+      'PUT',
+      `/api/cart/items/${productB.id}`,
+      {
+        headers: employeeHeaders,
+        json: {
+          quantity: 1,
+        },
+      },
+    );
+
+    assertStatus(cartItemAResponse, 200);
+    assertStatus(cartItemBResponse, 200);
+    assert.equal(cartItemBResponse.data.itemCount, 3);
+    assert.equal(cartItemBResponse.data.totalAmount, '80');
+
+    const removeItemResponse = await api(
+      'DELETE',
+      `/api/cart/items/${productB.id}`,
+      {
+        headers: employeeHeaders,
+      },
+    );
+
+    assertStatus(removeItemResponse, 200);
+    assert.equal(removeItemResponse.data.itemCount, 2);
+    assert.equal(removeItemResponse.data.totalAmount, '60');
+    assert.equal(removeItemResponse.data.items.length, 1);
+
+    const checkoutResponse = await api('POST', '/api/cart/checkout', {
+      headers: employeeHeaders,
+    });
+
+    assertStatus(checkoutResponse, [200, 201]);
+    assert.equal(checkoutResponse.data.order.status, 'CREATED');
+    assert.equal(checkoutResponse.data.order.pickupPointId, pickupPoint.id);
+    assert.equal(checkoutResponse.data.order.comment, 'Use persisted cart checkout.');
+    assert.equal(checkoutResponse.data.order.items.length, 1);
+    assert.equal(checkoutResponse.data.order.items[0].productId, productA.id);
+    assert.equal(checkoutResponse.data.balance.availableAmount, '90');
+    assert.equal(checkoutResponse.data.balance.reservedAmount, '60');
+
+    const cartAfterCheckoutResponse = await api('GET', '/api/cart', {
+      headers: employeeHeaders,
+    });
+
+    assertStatus(cartAfterCheckoutResponse, 200);
+    assert.equal(cartAfterCheckoutResponse.data.id, initialCartResponse.data.id);
+    assert.equal(cartAfterCheckoutResponse.data.itemCount, 0);
+    assert.equal(cartAfterCheckoutResponse.data.totalAmount, '0');
+    assert.equal(cartAfterCheckoutResponse.data.items.length, 0);
+    assert.equal(cartAfterCheckoutResponse.data.pickupPointId, null);
+    assert.equal(cartAfterCheckoutResponse.data.comment, null);
+  });
+
   test('expiration sweeps warn once and expire only available points', async () => {
     const { admin } = await bootstrapAdminAndLogin();
     const adminHeaders = buildAdminHeaders(admin.id);

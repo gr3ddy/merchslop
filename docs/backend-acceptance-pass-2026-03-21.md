@@ -17,7 +17,7 @@ Acceptance-pass выполнен для `backend`-контура `Merchshop MVP`
 
 ## Verification Baseline
 
-- `npm run test:critical` — `7/7 pass`
+- `npm run test:critical` — `8/8 pass`
 - ранее зафиксированный ручной smoke: [docs/smoke-test-report-2026-03-12.md](./smoke-test-report-2026-03-12.md)
 - live SMTP smoke-test against temporary `Mailpit` on `2026-03-21` — business emails for accrual, orders and expiration confirmed
 
@@ -25,6 +25,7 @@ Acceptance-pass выполнен для `backend`-контура `Merchshop MVP`
 
 - employee onboarding: `invite -> password complete -> reset`
 - order flow: `reserve -> confirm -> cancel`
+- persisted cart: item storage, metadata update and checkout into `Order`
 - expiration warning и expiration sweep
 - notifications read-flow
 - catalog happy path
@@ -50,6 +51,7 @@ Acceptance-pass выполнен для `backend`-контура `Merchshop MVP`
 | Сотрудники и импорт | Done | Excel import, валидация, `ImportJob`, активация/деактивация, локальный `User` |
 | Ledger и баланс | Done | `Transaction`, `BalanceSnapshot`, accrual, adjustment, rebuild, retry для serializable конфликтов |
 | Каталог | Done | категории, CRUD товаров, остатки, фото, публичная раздача изображений |
+| Persisted cart | Done | отдельные `Cart`/`CartItem`, сохраненный `pickupPoint/comment`, checkout через `POST /cart/checkout` |
 | Заказы | Done | создание заказа, резерв, admin status flow, confirm/write-off, cancel/release |
 | In-app уведомления | Done | события, список, summary, `mark as read`, `mark all as read` |
 | SMTP-адаптер | Done | SMTP-слой подключен для auth invite/reset, balance events, order events и expiration events |
@@ -75,13 +77,7 @@ Acceptance-pass выполнен для `backend`-контура `Merchshop MVP`
 
 ## Open Reservations
 
-### 1. Cart трактуется как implicit checkout, а не отдельная persisted сущность
-
-Заказ оформляется напрямую через `POST /orders` с набором items. С точки зрения backend checkout работает, но отдельной сохраненной `cart`-модели или cart endpoint-ов нет.
-
-Если читать пункт `корзина и checkout` строго как требование отдельной persisted корзины, это остается открытой оговоркой. Если корзина допускается как frontend/session concern, backend-часть можно считать достаточной.
-
-### 2. P1 hardening еще открыт
+### 1. P1 hardening еще открыт
 
 Не закрыты пункты из `P1. Усиление решения`:
 
@@ -97,5 +93,4 @@ Acceptance-pass выполнен для `backend`-контура `Merchshop MVP`
 
 Для полного acceptance без оговорок рекомендовано закрыть:
 
-1. Явное решение по трактовке `cart` в MVP
-2. Минимальный P1 hardening package
+1. Минимальный P1 hardening package

@@ -45,6 +45,24 @@ type OrderDetails = Prisma.OrderGetPayload<{
   };
 }>;
 
+type OrderCreationPayload = Pick<CreateOrderDto, 'items' | 'pickupPointId' | 'comment'>;
+type EmployeeNotificationEmail = {
+  to: string;
+  fullName: string;
+  title: string;
+  body: string;
+};
+type OrderCreationResult = {
+  order: OrderDetails;
+  reserveTransactionId: string;
+  balance: {
+    availableAmount: Prisma.Decimal;
+    reservedAmount: Prisma.Decimal;
+    updatedAt: Date;
+  };
+  emailNotification: EmployeeNotificationEmail;
+};
+
 @Injectable()
 export class OrdersService {
   constructor(
@@ -56,185 +74,85 @@ export class OrdersService {
   ) {}
 
   async createOrder(actor: RequestActor | undefined, payload: CreateOrderDto) {
+    const result = await this.prisma.runInSerializableTransaction((tx) =>
+      this.createOrderInTransaction(tx, actor, payload),
+    );
+
+    return this.finalizeCreatedOrder(actor, result, {
+      source: 'direct',
+    });
+  }
+
+  async checkoutCart(actor?: RequestActor) {
     if (!actor?.employeeId) {
       throw new BadRequestException(
-        'Employee context is required to create an order.',
+        'Employee context is required to checkout a persisted cart.',
       );
     }
 
-    const normalizedItems = this.normalizeItems(payload);
-
-    const result = await this.prisma.runInSerializableTransaction(
-      async (tx) => {
-        const employee = await tx.employee.findUnique({
-          where: {
-            id: actor.employeeId,
+    const result = await this.prisma.runInSerializableTransaction(async (tx) => {
+      const cart = await tx.cart.findUnique({
+        where: {
+          employeeId: actor.employeeId!,
+        },
+        include: {
+          items: {
+            orderBy: [{ createdAt: 'asc' }],
           },
-          include: {
-            balanceSnapshot: true,
-          },
-        });
+        },
+      });
 
-        if (!employee) {
-          throw new NotFoundException(
-            `Employee "${actor.employeeId}" was not found.`,
-          );
-        }
+      if (!cart || cart.items.length === 0) {
+        throw new BadRequestException('Cannot checkout an empty cart.');
+      }
 
-        if (employee.status !== EmployeeStatus.ACTIVE) {
-          throw new ConflictException('Inactive employee cannot create an order.');
-        }
+      const createdOrder = await this.createOrderInTransaction(tx, actor, {
+        items: cart.items.map((item) => ({
+          productId: item.productId,
+          quantity: item.quantity,
+        })),
+        pickupPointId: cart.pickupPointId ?? undefined,
+        comment: cart.comment ?? undefined,
+      });
 
-        if (payload.pickupPointId) {
-          const pickupPoint = await tx.pickupPoint.findUnique({
-            where: {
-              id: payload.pickupPointId,
-            },
-          });
+      await tx.cartItem.deleteMany({
+        where: {
+          cartId: cart.id,
+        },
+      });
+      await tx.cart.update({
+        where: {
+          id: cart.id,
+        },
+        data: {
+          pickupPointId: null,
+          comment: null,
+        },
+      });
 
-          if (!pickupPoint || !pickupPoint.isActive) {
-            throw new NotFoundException(
-              `Pickup point "${payload.pickupPointId}" is not available.`,
-            );
-          }
-        }
-
-        const products = await tx.product.findMany({
-          where: {
-            id: {
-              in: normalizedItems.map((item) => item.productId),
-            },
-          },
-        });
-
-        if (products.length !== normalizedItems.length) {
-          throw new NotFoundException('One or more ordered products were not found.');
-        }
-
-        const productMap = new Map(products.map((product) => [product.id, product]));
-        let totalAmount = new Prisma.Decimal(0);
-
-        for (const item of normalizedItems) {
-          const product = productMap.get(item.productId);
-
-          if (!product) {
-            throw new NotFoundException(
-              `Product "${item.productId}" was not found.`,
-            );
-          }
-
-          if (product.status !== ProductStatus.ACTIVE) {
-            throw new ConflictException(
-              `Product "${product.title}" is not available for ordering.`,
-            );
-          }
-
-          if (!product.hasUnlimitedStock && product.stockQty < item.quantity) {
-            throw new ConflictException(
-              `Not enough stock for product "${product.title}".`,
-            );
-          }
-
-          totalAmount = totalAmount.add(
-            product.pricePoints.mul(new Prisma.Decimal(item.quantity)),
-          );
-        }
-
-        const reserveAllocations =
-          await this.ledgerService.allocateEmployeeAvailableBalance(
-            employee.id,
-            totalAmount,
-            tx,
-          );
-
-        const createdOrder = await tx.order.create({
-          data: {
-            employeeId: employee.id,
-            status: OrderStatus.CREATED,
-            pickupPointId: payload.pickupPointId,
-            reservedAmount: totalAmount,
-            totalAmount,
-            comment: payload.comment,
-            items: {
-              create: normalizedItems.map((item) => {
-                const product = productMap.get(item.productId)!;
-
-                return {
-                  productId: product.id,
-                  quantity: item.quantity,
-                  pricePoints: product.pricePoints,
-                };
-              }),
-            },
-          },
-        });
-
-        const reserveTransaction = await tx.transaction.create({
-          data: {
-            employeeId: employee.id,
-            authorId: actor.userId,
-            orderId: createdOrder.id,
-            type: TransactionType.RESERVE,
-            status: TransactionStatus.CONFIRMED,
-            amount: totalAmount,
-            comment: 'Points reserved for order creation.',
-            metadata: this.buildLedgerMetadata({
-              allocations: reserveAllocations,
-            }),
-            effectiveAt: new Date(),
-          },
-        });
-
-        const balance = await this.ledgerService.rebuildEmployeeSnapshot(
-          employee.id,
-          tx,
-        );
-        const notificationContent = {
-          type: NotificationType.ORDER_CREATED,
-          title: 'Order created',
-          body: `Your order for ${totalAmount.toString()} points has been created and points are reserved.`,
-        };
-
-        await this.notificationsService.createForEmployee(
-          employee.id,
-          notificationContent,
-          tx,
-        );
-
-        const order = await this.loadOrderDetails(tx, createdOrder.id);
-
-        return {
-          order,
-          reserveTransactionId: reserveTransaction.id,
-          balance,
-          emailNotification: {
-            to: employee.email,
-            fullName: employee.fullName,
-            title: notificationContent.title,
-            body: notificationContent.body,
-          },
-        };
-      },
-    );
+      return {
+        ...createdOrder,
+        cartId: cart.id,
+        cartItemCount: cart.items.length,
+      };
+    });
 
     await this.auditService.createEvent({
       actorId: actor.userId,
-      action: 'order.created',
-      entityType: 'Order',
-      entityId: result.order.id,
+      action: 'cart.checked_out',
+      entityType: 'Cart',
+      entityId: result.cartId,
       payload: {
         employeeId: actor.employeeId,
-        totalAmount: result.order.totalAmount.toString(),
+        orderId: result.order.id,
+        itemCount: result.cartItemCount,
       },
     });
 
-    await this.sendEmployeeNotificationEmail(result.emailNotification);
-
-    return {
-      order: result.order,
-      reserveTransactionId: result.reserveTransactionId,
-      balance: result.balance,
-    };
+    return this.finalizeCreatedOrder(actor, result, {
+      source: 'cart',
+      cartId: result.cartId,
+    });
   }
 
   listOrders(actor?: RequestActor) {
@@ -608,6 +526,193 @@ export class OrdersService {
     return Array.from(byProductId.values());
   }
 
+  private async createOrderInTransaction(
+    tx: Prisma.TransactionClient,
+    actor: RequestActor | undefined,
+    payload: OrderCreationPayload,
+  ): Promise<OrderCreationResult> {
+    if (!actor?.employeeId) {
+      throw new BadRequestException(
+        'Employee context is required to create an order.',
+      );
+    }
+
+    const normalizedItems = this.normalizeItems(payload as CreateOrderDto);
+
+    const employee = await tx.employee.findUnique({
+      where: {
+        id: actor.employeeId,
+      },
+      include: {
+        balanceSnapshot: true,
+      },
+    });
+
+    if (!employee) {
+      throw new NotFoundException(`Employee "${actor.employeeId}" was not found.`);
+    }
+
+    if (employee.status !== EmployeeStatus.ACTIVE) {
+      throw new ConflictException('Inactive employee cannot create an order.');
+    }
+
+    if (payload.pickupPointId) {
+      const pickupPoint = await tx.pickupPoint.findUnique({
+        where: {
+          id: payload.pickupPointId,
+        },
+      });
+
+      if (!pickupPoint || !pickupPoint.isActive) {
+        throw new NotFoundException(
+          `Pickup point "${payload.pickupPointId}" is not available.`,
+        );
+      }
+    }
+
+    const products = await tx.product.findMany({
+      where: {
+        id: {
+          in: normalizedItems.map((item) => item.productId),
+        },
+      },
+    });
+
+    if (products.length !== normalizedItems.length) {
+      throw new NotFoundException('One or more ordered products were not found.');
+    }
+
+    const productMap = new Map(products.map((product) => [product.id, product]));
+    let totalAmount = new Prisma.Decimal(0);
+
+    for (const item of normalizedItems) {
+      const product = productMap.get(item.productId);
+
+      if (!product) {
+        throw new NotFoundException(`Product "${item.productId}" was not found.`);
+      }
+
+      if (product.status !== ProductStatus.ACTIVE) {
+        throw new ConflictException(
+          `Product "${product.title}" is not available for ordering.`,
+        );
+      }
+
+      if (!product.hasUnlimitedStock && product.stockQty < item.quantity) {
+        throw new ConflictException(
+          `Not enough stock for product "${product.title}".`,
+        );
+      }
+
+      totalAmount = totalAmount.add(
+        product.pricePoints.mul(new Prisma.Decimal(item.quantity)),
+      );
+    }
+
+    const reserveAllocations =
+      await this.ledgerService.allocateEmployeeAvailableBalance(
+        employee.id,
+        totalAmount,
+        tx,
+      );
+
+    const createdOrder = await tx.order.create({
+      data: {
+        employeeId: employee.id,
+        status: OrderStatus.CREATED,
+        pickupPointId: payload.pickupPointId,
+        reservedAmount: totalAmount,
+        totalAmount,
+        comment: payload.comment,
+        items: {
+          create: normalizedItems.map((item) => {
+            const product = productMap.get(item.productId)!;
+
+            return {
+              productId: product.id,
+              quantity: item.quantity,
+              pricePoints: product.pricePoints,
+            };
+          }),
+        },
+      },
+    });
+
+    const reserveTransaction = await tx.transaction.create({
+      data: {
+        employeeId: employee.id,
+        authorId: actor.userId,
+        orderId: createdOrder.id,
+        type: TransactionType.RESERVE,
+        status: TransactionStatus.CONFIRMED,
+        amount: totalAmount,
+        comment: 'Points reserved for order creation.',
+        metadata: this.buildLedgerMetadata({
+          allocations: reserveAllocations,
+        }),
+        effectiveAt: new Date(),
+      },
+    });
+
+    const balance = await this.ledgerService.rebuildEmployeeSnapshot(
+      employee.id,
+      tx,
+    );
+    const notificationContent = {
+      type: NotificationType.ORDER_CREATED,
+      title: 'Order created',
+      body: `Your order for ${totalAmount.toString()} points has been created and points are reserved.`,
+    };
+
+    await this.notificationsService.createForEmployee(
+      employee.id,
+      notificationContent,
+      tx,
+    );
+
+    return {
+      order: await this.loadOrderDetails(tx, createdOrder.id),
+      reserveTransactionId: reserveTransaction.id,
+      balance,
+      emailNotification: {
+        to: employee.email,
+        fullName: employee.fullName,
+        title: notificationContent.title,
+        body: notificationContent.body,
+      },
+    };
+  }
+
+  private async finalizeCreatedOrder(
+    actor: RequestActor | undefined,
+    result: OrderCreationResult,
+    input: {
+      source: 'direct' | 'cart';
+      cartId?: string;
+    },
+  ) {
+    await this.auditService.createEvent({
+      actorId: actor?.userId,
+      action: 'order.created',
+      entityType: 'Order',
+      entityId: result.order.id,
+      payload: {
+        employeeId: actor?.employeeId,
+        totalAmount: result.order.totalAmount.toString(),
+        source: input.source,
+        ...(input.cartId ? { cartId: input.cartId } : {}),
+      },
+    });
+
+    await this.sendEmployeeNotificationEmail(result.emailNotification);
+
+    return {
+      order: result.order,
+      reserveTransactionId: result.reserveTransactionId,
+      balance: result.balance,
+    };
+  }
+
   private assertTransition(current: OrderStatus, next: OrderStatus): void {
     const allowedTransitions: Record<OrderStatus, OrderStatus[]> = {
       [OrderStatus.CREATED]: [OrderStatus.CONFIRMED, OrderStatus.CANCELED],
@@ -706,12 +811,7 @@ export class OrdersService {
 
   private async sendEmployeeNotificationEmail(
     input:
-      | {
-          to: string;
-          fullName: string;
-          title: string;
-          body: string;
-        }
+      | EmployeeNotificationEmail
       | null
       | undefined,
   ): Promise<void> {
