@@ -99,9 +99,9 @@ npm run test:critical
 
 Для запуска нужен доступный PostgreSQL по `DATABASE_URL` из `.env`.
 
-## SMTP для invite/reset
+## SMTP для invite/reset и business notifications
 
-Чтобы invite/reset уходили по email, заполните SMTP-переменные в `.env` и включите `smtpEnabled` в `company-settings`:
+Чтобы письма по auth и ключевым бизнес-событиям уходили по email, заполните SMTP-переменные в `.env` и включите `smtpEnabled` в `company-settings`:
 
 ```bash
 curl -X PATCH http://localhost:3000/api/company-settings \
@@ -110,11 +110,20 @@ curl -X PATCH http://localhost:3000/api/company-settings \
   -d '{"smtpEnabled":true}'
 ```
 
+Сейчас SMTP используется для:
+
+- `invite`
+- `reset-password`
+- начислений и корректировок баланса
+- жизненного цикла заказов
+- предупреждений о скором сгорании и факта сгорания баллов
+
 Если `smtpEnabled=false` или SMTP не сконфигурирован, backend сохраняет текущий fallback:
 
 - invite/reset endpoint-ы продолжают работать
 - plain token возвращается в API-ответе для ручной передачи сотруднику
 - при успешной email-доставке токен в ответ больше не возвращается
+- бизнес-события продолжают приходить как `in-app` уведомления без ошибки backend flow
 
 ## Static assets для каталога
 

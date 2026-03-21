@@ -10,6 +10,7 @@ import { RequestActor } from '../../common/interfaces/request-actor.interface';
 import { AuditService } from '../audit/audit.service';
 import { CompanySettingsService } from '../company-settings/company-settings.service';
 import { LedgerAllocation, LedgerLot, LedgerService } from '../ledger/ledger.service';
+import { MailerService } from '../mailer/mailer.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -34,6 +35,7 @@ export class ExpirationService {
     private readonly auditService: AuditService,
     private readonly companySettingsService: CompanySettingsService,
     private readonly ledgerService: LedgerService,
+    private readonly mailerService: MailerService,
     private readonly notificationsService: NotificationsService,
   ) {}
 
@@ -78,20 +80,31 @@ export class ExpirationService {
       }
 
       const totalAmount = this.sumLots(pendingLots);
-      const notificationCreated = await this.prisma.$transaction(async (tx) => {
+      const employee = await this.prisma.employee.findUnique({
+        where: {
+          id: employeeId,
+        },
+        select: {
+          email: true,
+          fullName: true,
+        },
+      });
+
+      if (!employee) {
+        continue;
+      }
+
+      const notificationContent = {
+        type: NotificationType.POINTS_EXPIRING,
+        title: 'Points expiring soon',
+        body: this.buildWarningBody(pendingLots),
+      };
+      const warningResult = await this.prisma.$transaction(async (tx) => {
         const notification = await this.notificationsService.createForEmployee(
           employeeId,
-          {
-            type: NotificationType.POINTS_EXPIRING,
-            title: 'Points expiring soon',
-            body: this.buildWarningBody(pendingLots),
-          },
+          notificationContent,
           tx,
         );
-
-        if (!notification) {
-          return false;
-        }
 
         await tx.auditEvent.createMany({
           data: pendingLots.map((lot) => ({
@@ -107,14 +120,22 @@ export class ExpirationService {
           })),
         });
 
-        return true;
+        return {
+          notificationCreated: notification !== null,
+        };
       });
 
-      if (!notificationCreated) {
-        continue;
+      if (warningResult.notificationCreated) {
+        notificationsCreated += 1;
       }
 
-      notificationsCreated += 1;
+      await this.mailerService.sendEmployeeNotificationEmail({
+        to: employee.email,
+        fullName: employee.fullName,
+        title: notificationContent.title,
+        body: notificationContent.body,
+      });
+
       lotsWarned += pendingLots.length;
       totalWarningAmount = totalWarningAmount.add(totalAmount);
     }
@@ -167,6 +188,20 @@ export class ExpirationService {
           return null;
         }
 
+        const employee = await tx.employee.findUnique({
+          where: {
+            id: employeeId,
+          },
+          select: {
+            email: true,
+            fullName: true,
+          },
+        });
+
+        if (!employee) {
+          return null;
+        }
+
         const totalAmount = this.sumLots(expiredAvailableLots);
         const expirationTransaction = await tx.transaction.create({
           data: {
@@ -186,14 +221,15 @@ export class ExpirationService {
         });
 
         await this.ledgerService.rebuildEmployeeSnapshot(employeeId, tx);
+        const notificationContent = {
+          type: NotificationType.POINTS_EXPIRED,
+          title: 'Points expired',
+          body: this.buildExpirationBody(expiredAvailableLots, totalAmount),
+        };
 
         const notification = await this.notificationsService.createForEmployee(
           employeeId,
-          {
-            type: NotificationType.POINTS_EXPIRED,
-            title: 'Points expired',
-            body: this.buildExpirationBody(expiredAvailableLots, totalAmount),
-          },
+          notificationContent,
           tx,
         );
 
@@ -215,6 +251,12 @@ export class ExpirationService {
         return {
           amount: totalAmount,
           lots: expiredAvailableLots.length,
+          emailNotification: {
+            to: employee.email,
+            fullName: employee.fullName,
+            title: notificationContent.title,
+            body: notificationContent.body,
+          },
         };
       });
 
@@ -225,6 +267,10 @@ export class ExpirationService {
       transactionsCreated += 1;
       expiredLots += result.lots;
       totalExpiredAmount = totalExpiredAmount.add(result.amount);
+
+      await this.mailerService.sendEmployeeNotificationEmail(
+        result.emailNotification,
+      );
     }
 
     await this.auditService.createEvent({

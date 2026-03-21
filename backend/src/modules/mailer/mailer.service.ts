@@ -24,6 +24,20 @@ type PasswordActionEmailInput = {
   expiresAt: Date;
 };
 
+type EmployeeNotificationEmailInput = {
+  to: string;
+  fullName: string;
+  title: string;
+  body: string;
+  appPath?: string;
+};
+
+type RenderedMailContent = {
+  subject: string;
+  text: string;
+  html: string;
+};
+
 @Injectable()
 export class MailerService {
   private readonly logger = new Logger(MailerService.name);
@@ -37,53 +51,41 @@ export class MailerService {
   async sendPasswordActionEmail(
     input: PasswordActionEmailInput,
   ): Promise<MailDeliveryResult> {
-    const settings = await this.companySettingsService.getSettings();
-    const availability = this.getAvailability(settings.smtpEnabled);
-    const appName =
-      settings.companyName ||
-      this.configService.get<string>('APP_NAME') ||
-      'Merchshop';
+    const context = await this.resolveMailContext();
 
-    if (!availability.enabled) {
-      return {
-        mode: 'manual',
-        sent: false,
-        reason: availability.reason,
-        recipient: input.to,
-        messageId: null,
-      };
+    if (!context.availability.enabled) {
+      return this.buildManualDeliveryResult(
+        input.to,
+        context.availability.reason,
+      );
     }
 
-    try {
-      const link = this.buildPasswordActionLink(input.type, input.token);
-      const content = this.renderPasswordActionMessage(input, link, appName);
-      const result = await this.getTransporter().sendMail({
-        from: this.buildFromAddress(appName),
-        to: input.to,
-        subject: content.subject,
-        text: content.text,
-        html: content.html,
-      });
+    const link = this.buildPasswordActionLink(input.type, input.token);
+    const content = this.renderPasswordActionMessage(input, link, context.appName);
 
-      return {
-        mode: 'email',
-        sent: true,
-        reason: null,
-        recipient: input.to,
-        messageId: result.messageId ?? null,
-      };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'unknown_error';
-      this.logger.error(`Failed to send SMTP email to ${input.to}: ${message}`);
+    return this.sendRenderedEmail(input.to, content, context.appName);
+  }
 
-      return {
-        mode: 'manual',
-        sent: false,
-        reason: 'smtp_send_failed',
-        recipient: input.to,
-        messageId: null,
-      };
+  async sendEmployeeNotificationEmail(
+    input: EmployeeNotificationEmailInput,
+  ): Promise<MailDeliveryResult> {
+    const context = await this.resolveMailContext();
+
+    if (!context.availability.enabled) {
+      return this.buildManualDeliveryResult(
+        input.to,
+        context.availability.reason,
+      );
     }
+
+    const link = this.buildEmployeeAppLink(input.appPath);
+    const content = this.renderEmployeeNotificationMessage(
+      input,
+      link,
+      context.appName,
+    );
+
+    return this.sendRenderedEmail(input.to, content, context.appName);
   }
 
   private getAvailability(smtpEnabled: boolean): {
@@ -114,6 +116,24 @@ export class MailerService {
     return {
       enabled: true,
       reason: null,
+    };
+  }
+
+  private async resolveMailContext(): Promise<{
+    availability: {
+      enabled: boolean;
+      reason: string | null;
+    };
+    appName: string;
+  }> {
+    const settings = await this.companySettingsService.getSettings();
+
+    return {
+      availability: this.getAvailability(settings.smtpEnabled),
+      appName:
+        settings.companyName ||
+        this.configService.get<string>('APP_NAME') ||
+        'Merchshop',
     };
   }
 
@@ -155,15 +175,22 @@ export class MailerService {
     return url.toString();
   }
 
+  private buildEmployeeAppLink(pathname?: string): string | null {
+    const publicAppUrl = this.configService.get<string>('PUBLIC_APP_URL');
+
+    if (!publicAppUrl) {
+      return null;
+    }
+
+    const url = pathname ? new URL(pathname, publicAppUrl) : new URL(publicAppUrl);
+    return url.toString();
+  }
+
   private renderPasswordActionMessage(
     input: PasswordActionEmailInput,
     link: string | null,
     appName: string,
-  ): {
-    subject: string;
-    text: string;
-    html: string;
-  } {
+  ): RenderedMailContent {
     const actionLabel =
       input.type === PasswordActionTokenType.INVITE
         ? 'set your password'
@@ -212,6 +239,84 @@ export class MailerService {
       subject,
       text,
       html,
+    };
+  }
+
+  private renderEmployeeNotificationMessage(
+    input: EmployeeNotificationEmailInput,
+    link: string | null,
+    appName: string,
+  ): RenderedMailContent {
+    const subject = `${appName}: ${input.title}`;
+    const greeting = `Hello ${input.fullName},`;
+    const text = [
+      greeting,
+      '',
+      input.body,
+      ...(link ? ['', `Open the app: ${link}`] : []),
+      '',
+      'If you did not expect this email, please contact your administrator.',
+    ].join('\n');
+
+    const html = [
+      `<p>${greeting}</p>`,
+      `<p>${input.body}</p>`,
+      ...(link ? [`<p><a href="${link}">Open the app</a></p>`] : []),
+      '<p>If you did not expect this email, please contact your administrator.</p>',
+    ].join('');
+
+    return {
+      subject,
+      text,
+      html,
+    };
+  }
+
+  private async sendRenderedEmail(
+    recipient: string,
+    content: RenderedMailContent,
+    appName: string,
+  ): Promise<MailDeliveryResult> {
+    try {
+      const result = await this.getTransporter().sendMail({
+        from: this.buildFromAddress(appName),
+        to: recipient,
+        subject: content.subject,
+        text: content.text,
+        html: content.html,
+      });
+
+      return {
+        mode: 'email',
+        sent: true,
+        reason: null,
+        recipient,
+        messageId: result.messageId ?? null,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'unknown_error';
+      this.logger.error(`Failed to send SMTP email to ${recipient}: ${message}`);
+
+      return {
+        mode: 'manual',
+        sent: false,
+        reason: 'smtp_send_failed',
+        recipient,
+        messageId: null,
+      };
+    }
+  }
+
+  private buildManualDeliveryResult(
+    recipient: string,
+    reason: string | null,
+  ): MailDeliveryResult {
+    return {
+      mode: 'manual',
+      sent: false,
+      reason,
+      recipient,
+      messageId: null,
     };
   }
 

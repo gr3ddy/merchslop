@@ -1,0 +1,113 @@
+# Backend Acceptance Pass 2026-03-21
+
+## Scope
+
+Acceptance-pass выполнен для `backend`-контура `Merchshop MVP` относительно [docs/mvp-template-foundation.md](./mvp-template-foundation.md).
+
+Что входило в проверку:
+
+- сверка текущего backend-кода с MVP-чеклистом и обязательными бизнес-правилами
+- сверка текущего test baseline
+- актуальный прогон `npm run test:critical`
+
+Что не входило в проверку:
+
+- frontend/UI acceptance
+- P1 production hardening вне backend MVP core
+
+## Verification Baseline
+
+- `npm run test:critical` — `7/7 pass`
+- ранее зафиксированный ручной smoke: [docs/smoke-test-report-2026-03-12.md](./smoke-test-report-2026-03-12.md)
+
+Текущий automated baseline покрывает:
+
+- employee onboarding: `invite -> password complete -> reset`
+- order flow: `reserve -> confirm -> cancel`
+- expiration warning и expiration sweep
+- notifications read-flow
+- catalog happy path
+- employees import с `ImportJob` и partial success
+- reports list + CSV export
+
+## Acceptance Summary
+
+Итоговый статус backend на текущем этапе: `accepted with reservations`.
+
+Это означает:
+
+- backend закрывает основное MVP-ядро
+- обязательные бизнес-правила backend-слоя выглядят выполненными
+- есть несколько открытых оговорок, которые не ломают основной контур, но важны для финального product acceptance
+
+## MVP Checklist Status
+
+| Область | Статус | Комментарий |
+|---|---|---|
+| Платформенный фундамент | Done | `NestJS`, Prisma, config, Swagger, RBAC, actor context, audit, static assets для `uploads` |
+| Локальная авторизация | Done | `bootstrap-admin`, `login`, `invite/reset-password`, employee account binding |
+| Сотрудники и импорт | Done | Excel import, валидация, `ImportJob`, активация/деактивация, локальный `User` |
+| Ledger и баланс | Done | `Transaction`, `BalanceSnapshot`, accrual, adjustment, rebuild, retry для serializable конфликтов |
+| Каталог | Done | категории, CRUD товаров, остатки, фото, публичная раздача изображений |
+| Заказы | Done | создание заказа, резерв, admin status flow, confirm/write-off, cancel/release |
+| In-app уведомления | Done | события, список, summary, `mark as read`, `mark all as read` |
+| SMTP-адаптер | Done | SMTP-слой подключен для auth invite/reset, balance events, order events и expiration events |
+| Отчеты и экспорт | Done | balances, transactions, orders, expirations, CSV export |
+| Сгорание | Done | global settings, warning scheduler, expiration scheduler, report по expirations |
+| Аудит | Done | критичные действия по балансу, каталогу, заказам, import/auth flow аудируются |
+| Critical automated tests | Done | ключевые бизнес-потоки покрыты и проходят |
+
+## Business Rules Check
+
+| Правило | Статус | Комментарий |
+|---|---|---|
+| 1. Любое изменение баланса создает `Transaction` | Done | covered code + e2e |
+| 2. При создании заказа баллы резервируются, а не списываются | Done | covered code + e2e |
+| 3. При подтверждении заказа резерв превращается в списание | Done | covered code + e2e |
+| 4. При отмене резерв возвращается отдельной транзакцией | Done | covered code + e2e |
+| 5. Ручная корректировка требует причину и комментарий | Done | DTO и service logic согласованы |
+| 6. Остаток товара уменьшается только после подтверждения | Done | covered code + e2e |
+| 7. Сгорание выполняется фоновым процессом | Done | scheduler + service + report |
+| 8. Импорт валидирует уникальность табельного номера и email | Done | service logic + e2e |
+| 9. Неактивный сотрудник не может войти и оформить заказ | Done | status checks есть в auth/orders flow |
+| 10. Критичные admin-действия аудируются | Done | balance/catalog/order/import/auth events присутствуют |
+
+## Open Reservations
+
+### 1. Реальная SMTP-доставка еще не smoke-verified
+
+В `MVP` базовые email-уведомления backend-слоя реализованы. Сейчас в коде SMTP-слой используется для:
+
+- `invite`
+- `reset-password`
+- начислений и корректировок
+- статусов заказа
+- предупреждений о сгорании и факта сгорания
+
+Но в текущем окружении это еще не было проверено против живого SMTP-сервера с реальной доставкой письма.
+
+### 2. Cart трактуется как implicit checkout, а не отдельная persisted сущность
+
+Заказ оформляется напрямую через `POST /orders` с набором items. С точки зрения backend checkout работает, но отдельной сохраненной `cart`-модели или cart endpoint-ов нет.
+
+Если читать пункт `корзина и checkout` строго как требование отдельной persisted корзины, это остается открытой оговоркой. Если корзина допускается как frontend/session concern, backend-часть можно считать достаточной.
+
+### 3. P1 hardening еще открыт
+
+Не закрыты пункты из `P1. Усиление решения`:
+
+- checklist backup/restore
+- monitoring/error tracking
+- дополнительные ограничения и валидация upload-ов
+
+Это не блокирует backend MVP core, но блокирует production-hardening acceptance.
+
+## Decision
+
+На текущем срезе backend можно считать `MVP-ready` для основной доменной логики и внутренних интеграционных работ.
+
+Для полного acceptance без оговорок рекомендовано закрыть:
+
+1. Live SMTP smoke-test с реальным SMTP-сервером
+2. Явное решение по трактовке `cart` в MVP
+3. Минимальный P1 hardening package

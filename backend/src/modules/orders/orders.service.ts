@@ -18,6 +18,7 @@ import { UserRole } from '../../common/enums/domain.enum';
 import { RequestActor } from '../../common/interfaces/request-actor.interface';
 import { AuditService } from '../audit/audit.service';
 import { LedgerAllocation, LedgerService } from '../ledger/ledger.service';
+import { MailerService } from '../mailer/mailer.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateOrderDto } from './dto/create-order.dto';
@@ -50,6 +51,7 @@ export class OrdersService {
     private readonly prisma: PrismaService,
     private readonly auditService: AuditService,
     private readonly ledgerService: LedgerService,
+    private readonly mailerService: MailerService,
     private readonly notificationsService: NotificationsService,
   ) {}
 
@@ -183,15 +185,19 @@ export class OrdersService {
           },
         });
 
-        const balance = await this.ledgerService.rebuildEmployeeSnapshot(employee.id, tx);
+        const balance = await this.ledgerService.rebuildEmployeeSnapshot(
+          employee.id,
+          tx,
+        );
+        const notificationContent = {
+          type: NotificationType.ORDER_CREATED,
+          title: 'Order created',
+          body: `Your order for ${totalAmount.toString()} points has been created and points are reserved.`,
+        };
 
         await this.notificationsService.createForEmployee(
           employee.id,
-          {
-            type: NotificationType.ORDER_CREATED,
-            title: 'Order created',
-            body: `Your order for ${totalAmount.toString()} points has been created and points are reserved.`,
-          },
+          notificationContent,
           tx,
         );
 
@@ -201,6 +207,12 @@ export class OrdersService {
           order,
           reserveTransactionId: reserveTransaction.id,
           balance,
+          emailNotification: {
+            to: employee.email,
+            fullName: employee.fullName,
+            title: notificationContent.title,
+            body: notificationContent.body,
+          },
         };
       },
     );
@@ -216,7 +228,13 @@ export class OrdersService {
       },
     });
 
-    return result;
+    await this.sendEmployeeNotificationEmail(result.emailNotification);
+
+    return {
+      order: result.order,
+      reserveTransactionId: result.reserveTransactionId,
+      balance: result.balance,
+    };
   }
 
   listOrders(actor?: RequestActor) {
@@ -292,6 +310,13 @@ export class OrdersService {
           (transaction) => transaction.type === TransactionType.RELEASE,
         );
 
+        let emailNotification: {
+          to: string;
+          fullName: string;
+          title: string;
+          body: string;
+        } | null = null;
+
         if (payload.status === OrderStatus.CONFIRMED) {
           if (!reserveTransaction) {
             throw new ConflictException('Reserve transaction is missing for order.');
@@ -360,15 +385,24 @@ export class OrdersService {
             },
           });
 
+          const notificationContent = {
+            type: NotificationType.ORDER_CONFIRMED,
+            title: 'Order confirmed',
+            body: 'Your order has been confirmed and points were written off.',
+          };
+
           await this.notificationsService.createForEmployee(
             order.employeeId,
-            {
-              type: NotificationType.ORDER_CONFIRMED,
-              title: 'Order confirmed',
-              body: 'Your order has been confirmed and points were written off.',
-            },
+            notificationContent,
             tx,
           );
+
+          emailNotification = {
+            to: order.employee.email,
+            fullName: order.employee.fullName,
+            title: notificationContent.title,
+            body: notificationContent.body,
+          };
         }
 
         if (payload.status === OrderStatus.ASSEMBLED) {
@@ -383,17 +417,26 @@ export class OrdersService {
             },
           });
 
+          const notificationContent = {
+            type: NotificationType.ORDER_ASSEMBLED,
+            title: 'Order assembled',
+            body: order.pickupPoint?.name
+              ? `Your order is ready for pickup at "${order.pickupPoint.name}".`
+              : 'Your order is ready for pickup.',
+          };
+
           await this.notificationsService.createForEmployee(
             order.employeeId,
-            {
-              type: NotificationType.ORDER_ASSEMBLED,
-              title: 'Order assembled',
-              body: order.pickupPoint?.name
-                ? `Your order is ready for pickup at "${order.pickupPoint.name}".`
-                : 'Your order is ready for pickup.',
-            },
+            notificationContent,
             tx,
           );
+
+          emailNotification = {
+            to: order.employee.email,
+            fullName: order.employee.fullName,
+            title: notificationContent.title,
+            body: notificationContent.body,
+          };
         }
 
         if (payload.status === OrderStatus.ISSUED) {
@@ -408,15 +451,24 @@ export class OrdersService {
             },
           });
 
+          const notificationContent = {
+            type: NotificationType.ORDER_ISSUED,
+            title: 'Order issued',
+            body: 'Your order has been issued.',
+          };
+
           await this.notificationsService.createForEmployee(
             order.employeeId,
-            {
-              type: NotificationType.ORDER_ISSUED,
-              title: 'Order issued',
-              body: 'Your order has been issued.',
-            },
+            notificationContent,
             tx,
           );
+
+          emailNotification = {
+            to: order.employee.email,
+            fullName: order.employee.fullName,
+            title: notificationContent.title,
+            body: notificationContent.body,
+          };
         }
 
         if (payload.status === OrderStatus.CANCELED) {
@@ -491,21 +543,33 @@ export class OrdersService {
             },
           });
 
+          const notificationContent = {
+            type: NotificationType.ORDER_CANCELED,
+            title: 'Order canceled',
+            body:
+              order.status === OrderStatus.CREATED
+                ? 'Your order was canceled and reserved points were released.'
+                : 'Your order was canceled and points were refunded.',
+          };
+
           await this.notificationsService.createForEmployee(
             order.employeeId,
-            {
-              type: NotificationType.ORDER_CANCELED,
-              title: 'Order canceled',
-              body:
-                order.status === OrderStatus.CREATED
-                  ? 'Your order was canceled and reserved points were released.'
-                  : 'Your order was canceled and points were refunded.',
-            },
+            notificationContent,
             tx,
           );
+
+          emailNotification = {
+            to: order.employee.email,
+            fullName: order.employee.fullName,
+            title: notificationContent.title,
+            body: notificationContent.body,
+          };
         }
 
-        return this.loadOrderDetails(tx, order.id);
+        return {
+          order: await this.loadOrderDetails(tx, order.id),
+          emailNotification,
+        };
       },
     );
 
@@ -519,7 +583,9 @@ export class OrdersService {
       },
     });
 
-    return result;
+    await this.sendEmployeeNotificationEmail(result.emailNotification);
+
+    return result.order;
   }
 
   private normalizeItems(payload: CreateOrderDto) {
@@ -636,5 +702,23 @@ export class OrdersService {
         },
       },
     });
+  }
+
+  private async sendEmployeeNotificationEmail(
+    input:
+      | {
+          to: string;
+          fullName: string;
+          title: string;
+          body: string;
+        }
+      | null
+      | undefined,
+  ): Promise<void> {
+    if (!input) {
+      return;
+    }
+
+    await this.mailerService.sendEmployeeNotificationEmail(input);
   }
 }

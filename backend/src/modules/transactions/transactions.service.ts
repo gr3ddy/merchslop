@@ -20,6 +20,7 @@ import {
   LedgerAllocation,
   LedgerService,
 } from '../ledger/ledger.service';
+import { MailerService } from '../mailer/mailer.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateAccrualDto } from './dto/create-accrual.dto';
@@ -32,6 +33,7 @@ export class TransactionsService {
     private readonly auditService: AuditService,
     private readonly companySettingsService: CompanySettingsService,
     private readonly ledgerService: LedgerService,
+    private readonly mailerService: MailerService,
     private readonly notificationsService: NotificationsService,
   ) {}
 
@@ -96,21 +98,31 @@ export class TransactionsService {
           },
         });
 
-        const balance = await this.ledgerService.rebuildEmployeeSnapshot(employee.id, tx);
+        const balance = await this.ledgerService.rebuildEmployeeSnapshot(
+          employee.id,
+          tx,
+        );
+        const notificationContent = {
+          type: NotificationType.BALANCE_ACCRUAL,
+          title: 'Points accrued',
+          body: `You received ${amount.toString()} points for "${reason.title}".`,
+        };
 
         await this.notificationsService.createForEmployee(
           employee.id,
-          {
-            type: NotificationType.BALANCE_ACCRUAL,
-            title: 'Points accrued',
-            body: `You received ${amount.toString()} points for "${reason.title}".`,
-          },
+          notificationContent,
           tx,
         );
 
         return {
           transaction,
           balance,
+          emailNotification: {
+            to: employee.email,
+            fullName: employee.fullName,
+            title: notificationContent.title,
+            body: notificationContent.body,
+          },
         };
       },
     );
@@ -127,7 +139,12 @@ export class TransactionsService {
       },
     });
 
-    return result;
+    await this.sendEmployeeNotificationEmail(result.emailNotification);
+
+    return {
+      transaction: result.transaction,
+      balance: result.balance,
+    };
   }
 
   async createAdjustment(payload: CreateAdjustmentDto, actor?: RequestActor) {
@@ -189,23 +206,33 @@ export class TransactionsService {
           },
         });
 
-        const balance = await this.ledgerService.rebuildEmployeeSnapshot(employee.id, tx);
+        const balance = await this.ledgerService.rebuildEmployeeSnapshot(
+          employee.id,
+          tx,
+        );
+        const notificationContent = {
+          type: NotificationType.BALANCE_ADJUSTMENT,
+          title: 'Balance adjusted',
+          body: `Your balance was ${
+            amount.gt(0) ? 'increased' : 'decreased'
+          } by ${amount.abs().toString()} points for "${reason.title}".`,
+        };
 
         await this.notificationsService.createForEmployee(
           employee.id,
-          {
-            type: NotificationType.BALANCE_ADJUSTMENT,
-            title: 'Balance adjusted',
-            body: `Your balance was ${
-              amount.gt(0) ? 'increased' : 'decreased'
-            } by ${amount.abs().toString()} points for "${reason.title}".`,
-          },
+          notificationContent,
           tx,
         );
 
         return {
           transaction,
           balance,
+          emailNotification: {
+            to: employee.email,
+            fullName: employee.fullName,
+            title: notificationContent.title,
+            body: notificationContent.body,
+          },
         };
       },
     );
@@ -223,7 +250,12 @@ export class TransactionsService {
       },
     });
 
-    return result;
+    await this.sendEmployeeNotificationEmail(result.emailNotification);
+
+    return {
+      transaction: result.transaction,
+      balance: result.balance,
+    };
   }
 
   async rebuildBalance(employeeId: string, actor?: RequestActor) {
@@ -270,5 +302,14 @@ export class TransactionsService {
       ...(reference ? { reference } : {}),
       ...(allocations.length > 0 ? { allocations } : {}),
     };
+  }
+
+  private async sendEmployeeNotificationEmail(input: {
+    to: string;
+    fullName: string;
+    title: string;
+    body: string;
+  }): Promise<void> {
+    await this.mailerService.sendEmployeeNotificationEmail(input);
   }
 }
