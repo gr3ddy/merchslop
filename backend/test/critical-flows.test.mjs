@@ -8,6 +8,7 @@ import { after, before, beforeEach, describe, test } from 'node:test';
 import path from 'node:path';
 
 import { PrismaClient } from '@prisma/client';
+import * as XLSX from 'xlsx';
 
 const backendRoot = fileURLToPath(new URL('..', import.meta.url));
 const prismaCliPath = path.join(
@@ -543,6 +544,187 @@ describe('critical backend flows', { concurrency: false }, () => {
     assert.equal(productCardResponse.data.id, productResponse.data.id);
     assert.equal(productCardResponse.data.title, 'Catalog Hoodie');
   });
+
+  test('employee import supports partial success and provisions local accounts', async () => {
+    const { admin } = await bootstrapAdminAndLogin();
+    const adminHeaders = buildAdminHeaders(admin.id);
+
+    const templateResponse = await api('GET', '/api/employees/import-template', {
+      headers: adminHeaders,
+    });
+
+    assertStatus(templateResponse, 200);
+    assert.equal(templateResponse.data.fileType, 'xlsx');
+    assert.deepEqual(templateResponse.data.requiredColumns, [
+      'employeeNumber',
+      'fullName',
+      'email',
+      'department',
+    ]);
+
+    const workbook = XLSX.utils.book_new();
+    const worksheet = XLSX.utils.aoa_to_sheet([
+      ['employeeNumber', 'fullName', 'email', 'department'],
+      ['IMP-001', 'Imported One', 'imported.one@example.com', 'HR'],
+      ['IMP-001', 'Imported Duplicate Number', 'imported.two@example.com', 'HR'],
+      ['IMP-002', 'Imported Duplicate Email', 'imported.one@example.com', 'HR'],
+    ]);
+
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'employees');
+
+    const formData = new FormData();
+    formData.append(
+      'file',
+      new Blob([XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' })], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      }),
+      'employees-import.xlsx',
+    );
+
+    const importResponse = await api('POST', '/api/employees/import', {
+      headers: adminHeaders,
+      formData,
+    });
+
+    assertStatus(importResponse, [200, 201]);
+    assert.equal(importResponse.data.status, 'PARTIAL');
+    assert.equal(importResponse.data.rowsTotal, 3);
+    assert.equal(importResponse.data.rowsSucceeded, 1);
+    assert.equal(importResponse.data.rowsFailed, 2);
+    assert.equal(importResponse.data.summary.sheetName, 'employees');
+    assert.equal(importResponse.data.summary.createdEmployees.length, 1);
+    assert.equal(importResponse.data.summary.errors.length, 2);
+
+    const importedEmployee = await prisma.employee.findUniqueOrThrow({
+      where: {
+        employeeNumber: 'IMP-001',
+      },
+      include: {
+        user: true,
+        balanceSnapshot: true,
+      },
+    });
+
+    assert.equal(importedEmployee.email, 'imported.one@example.com');
+    assert.ok(importedEmployee.user, 'Imported employee should have a linked user.');
+    assert.equal(importedEmployee.user.status, 'INVITED');
+    assert.equal(importedEmployee.balanceSnapshot.availableAmount.toString(), '0');
+
+    const importJobs = await prisma.importJob.findMany();
+    assert.equal(importJobs.length, 1);
+    assert.equal(importJobs[0].status, 'PARTIAL');
+  });
+
+  test('reports endpoints return list data and CSV exports for balances, transactions, orders and expirations', async () => {
+    const { admin } = await bootstrapAdminAndLogin();
+    const adminHeaders = buildAdminHeaders(admin.id);
+    const dataset = await seedReportsDataset(adminHeaders);
+
+    const balancesResponse = await api(
+      'GET',
+      `/api/reports/balances?employeeId=${dataset.employee.id}`,
+      {
+        headers: adminHeaders,
+      },
+    );
+    const transactionsResponse = await api(
+      'GET',
+      `/api/reports/transactions?employeeId=${dataset.employee.id}`,
+      {
+        headers: adminHeaders,
+      },
+    );
+    const ordersResponse = await api(
+      'GET',
+      `/api/reports/orders?employeeId=${dataset.employee.id}`,
+      {
+        headers: adminHeaders,
+      },
+    );
+    const expirationsResponse = await api(
+      'GET',
+      `/api/reports/expirations?employeeId=${dataset.employee.id}`,
+      {
+        headers: adminHeaders,
+      },
+    );
+
+    assertStatus(balancesResponse, 200);
+    assertStatus(transactionsResponse, 200);
+    assertStatus(ordersResponse, 200);
+    assertStatus(expirationsResponse, 200);
+    assert.equal(balancesResponse.data.length, 1);
+    assert.equal(transactionsResponse.data.length, 5);
+    assert.equal(ordersResponse.data.length, 1);
+    assert.equal(expirationsResponse.data.length, 1);
+    assert.equal(balancesResponse.data[0].employeeNumber, 'E2E-REPORT-001');
+    assert.equal(ordersResponse.data[0].status, 'CONFIRMED');
+    assert.equal(expirationsResponse.data[0].type, 'EXPIRATION');
+
+    const balancesExportResponse = await api(
+      'GET',
+      `/api/reports/balances/export?employeeId=${dataset.employee.id}`,
+      {
+        headers: adminHeaders,
+      },
+    );
+    const transactionsExportResponse = await api(
+      'GET',
+      `/api/reports/transactions/export?employeeId=${dataset.employee.id}`,
+      {
+        headers: adminHeaders,
+      },
+    );
+    const ordersExportResponse = await api(
+      'GET',
+      `/api/reports/orders/export?employeeId=${dataset.employee.id}`,
+      {
+        headers: adminHeaders,
+      },
+    );
+    const expirationsExportResponse = await api(
+      'GET',
+      `/api/reports/expirations/export?employeeId=${dataset.employee.id}`,
+      {
+        headers: adminHeaders,
+      },
+    );
+
+    assertStatus(balancesExportResponse, 200);
+    assertStatus(transactionsExportResponse, 200);
+    assertStatus(ordersExportResponse, 200);
+    assertStatus(expirationsExportResponse, 200);
+
+    assert.equal(
+      balancesExportResponse.headers.get('content-type'),
+      'text/csv; charset=utf-8',
+    );
+    assert.equal(
+      balancesExportResponse.headers.get('content-disposition'),
+      'attachment; filename="balances-report.csv"',
+    );
+    assert.match(
+      balancesExportResponse.data,
+      /^employeeId,employeeNumber,fullName,email,department,status,availableAmount/m,
+    );
+    assert.match(balancesExportResponse.data, /E2E-REPORT-001/);
+    assert.match(balancesExportResponse.data, /,60,0,/);
+    assert.match(
+      transactionsExportResponse.data,
+      /^transactionId,effectiveAt,createdAt,employeeId,employeeNumber,employeeName,type,status,amount/m,
+    );
+    assert.match(transactionsExportResponse.data, /EXPIRATION/);
+    assert.match(
+      ordersExportResponse.data,
+      /^orderId,createdAt,employeeId,employeeNumber,employeeName,status,pickupPoint,totalAmount/m,
+    );
+    assert.match(ordersExportResponse.data, /Report Hoodie x1 @ 40/);
+    assert.match(
+      expirationsExportResponse.data,
+      /^transactionId,effectiveAt,createdAt,employeeId,employeeNumber,employeeName,amount/m,
+    );
+    assert.match(expirationsExportResponse.data, /60/);
+  });
 });
 
 function startAppProcess(port) {
@@ -622,7 +804,9 @@ async function api(method, pathname, options = {}) {
 
   let body;
 
-  if (options.json !== undefined) {
+  if (options.formData !== undefined) {
+    body = options.formData;
+  } else if (options.json !== undefined) {
     headers.set('content-type', 'application/json');
     body = JSON.stringify(options.json);
   }
@@ -646,6 +830,7 @@ async function api(method, pathname, options = {}) {
   return {
     status: response.status,
     data,
+    headers: response.headers,
   };
 }
 
@@ -687,6 +872,124 @@ async function createEmployee({ headers, token, payload }) {
   assertStatus(response, [200, 201]);
 
   return response.data;
+}
+
+async function seedReportsDataset(adminHeaders) {
+  const employee = await createEmployee({
+    headers: adminHeaders,
+    payload: {
+      employeeNumber: 'E2E-REPORT-001',
+      fullName: 'Reporting Employee',
+      email: 'employee.reports@example.com',
+      department: 'Analytics',
+    },
+  });
+
+  assert.ok(employee.user, 'Reporting dataset employee should have a linked user.');
+
+  await prisma.accrualReason.create({
+    data: {
+      code: 'REPORT_TEST',
+      title: 'Report Test Reason',
+      appliesToAccrual: true,
+    },
+  });
+
+  const product = await prisma.product.create({
+    data: {
+      sku: 'REPORT-SKU-001',
+      title: 'Report Hoodie',
+      pricePoints: 40,
+      stockQty: 10,
+    },
+  });
+
+  const accrualResponse = await api('POST', '/api/transactions/accruals', {
+    headers: adminHeaders,
+    json: {
+      employeeId: employee.id,
+      amount: 100,
+      reasonCode: 'REPORT_TEST',
+      comment: 'Seed balance for reports.',
+    },
+  });
+
+  assertStatus(accrualResponse, [200, 201]);
+
+  const orderResponse = await api('POST', '/api/orders', {
+    headers: buildEmployeeHeaders(employee.user.id, employee.id),
+    json: {
+      items: [
+        {
+          productId: product.id,
+          quantity: 1,
+        },
+      ],
+      comment: 'Seed order for report dataset.',
+    },
+  });
+
+  assertStatus(orderResponse, [200, 201]);
+
+  const confirmResponse = await api(
+    'PATCH',
+    `/api/orders/${orderResponse.data.order.id}/status`,
+    {
+      headers: adminHeaders,
+      json: {
+        status: 'CONFIRMED',
+        comment: 'Confirm report order.',
+      },
+    },
+  );
+
+  assertStatus(confirmResponse, 200);
+
+  const expiringAccrualResponse = await api('POST', '/api/transactions/accruals', {
+    headers: adminHeaders,
+    json: {
+      employeeId: employee.id,
+      amount: 60,
+      reasonCode: 'REPORT_TEST',
+      comment: 'Seed expiring balance for reports.',
+    },
+  });
+
+  assertStatus(expiringAccrualResponse, [200, 201]);
+
+  const accrualTransactions = await prisma.transaction.findMany({
+    where: {
+      employeeId: employee.id,
+      type: 'ACCRUAL',
+    },
+    orderBy: {
+      createdAt: 'asc',
+    },
+  });
+
+  assert.equal(accrualTransactions.length, 2);
+
+  await prisma.transaction.update({
+    where: {
+      id: accrualTransactions[1].id,
+    },
+    data: {
+      expiresAt: new Date(Date.now() - 24 * 60 * 60 * 1000),
+    },
+  });
+
+  const expirationRun = await api('POST', '/api/expiration/run', {
+    headers: adminHeaders,
+  });
+
+  assertStatus(expirationRun, [200, 201]);
+  assert.equal(expirationRun.data.transactionsCreated, 1);
+
+  return {
+    employee,
+    product,
+    orderId: orderResponse.data.order.id,
+  };
 }
 
 function buildAdminHeaders(userId) {

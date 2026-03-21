@@ -94,6 +94,8 @@ npm run test:critical
 - `expiration warning` и `expiration sweep`
 - `notifications` summary/read flow
 - базовый happy path каталога
+- `employees import` с partial success и `ImportJob`
+- `reports` list + CSV export для balances, transactions, orders и expirations
 
 Для запуска нужен доступный PostgreSQL по `DATABASE_URL` из `.env`.
 
