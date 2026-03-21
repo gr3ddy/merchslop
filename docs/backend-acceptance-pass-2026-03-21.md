@@ -17,7 +17,7 @@ Acceptance-pass выполнен для `backend`-контура `Merchshop MVP`
 
 ## Verification Baseline
 
-- `npm run test:critical` — `8/8 pass`
+- `npm run test:critical` — `9/9 pass`
 - ранее зафиксированный ручной smoke: [docs/smoke-test-report-2026-03-12.md](./smoke-test-report-2026-03-12.md)
 - live SMTP smoke-test against temporary `Mailpit` on `2026-03-21` — business emails for accrual, orders and expiration confirmed
 
@@ -29,6 +29,7 @@ Acceptance-pass выполнен для `backend`-контура `Merchshop MVP`
 - expiration warning и expiration sweep
 - notifications read-flow
 - catalog happy path
+- upload validation for employee import and catalog images
 - employees import с `ImportJob` и partial success
 - reports list + CSV export
 
@@ -81,8 +82,11 @@ Acceptance-pass выполнен для `backend`-контура `Merchshop MVP`
 
 Не закрыты пункты из `P1. Усиление решения`:
 
-- checklist backup/restore
 - monitoring/error tracking
+
+Что уже закрыто в этом блоке:
+
+- checklist backup/restore в [docs/backend-backup-restore-checklist.md](./backend-backup-restore-checklist.md)
 - дополнительные ограничения и валидация upload-ов
 
 Это не блокирует backend MVP core, но блокирует production-hardening acceptance.

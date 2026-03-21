@@ -24,6 +24,12 @@ import { DevActorHeaders } from '../../common/decorators/dev-actor-headers.decor
 import { Roles } from '../../common/decorators/roles.decorator';
 import { UserRole } from '../../common/enums/domain.enum';
 import { RequestActor } from '../../common/interfaces/request-actor.interface';
+import {
+  CATALOG_IMAGE_ALLOWED_EXTENSIONS,
+  CATALOG_IMAGE_ALLOWED_MIME_TYPES,
+  CATALOG_IMAGE_UPLOAD_MAX_BYTES,
+} from '../../common/upload/upload.constants';
+import { createUploadMulterOptions } from '../../common/upload/upload.utils';
 import { CreateProductCategoryDto } from './dto/create-product-category.dto';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductCategoryDto } from './dto/update-product-category.dto';
@@ -36,6 +42,7 @@ type UploadedCatalogImageFile = {
   originalname: string;
   mimetype: string;
   buffer: Buffer;
+  size: number;
 };
 
 @ApiTags('catalog')
@@ -153,7 +160,17 @@ export class CatalogController {
   @Post('products/:productId/images')
   @Roles(UserRole.PROGRAM_ADMIN)
   @ApiBearerAuth()
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(
+    FileInterceptor(
+      'file',
+      createUploadMulterOptions({
+        fileLabel: 'Catalog image',
+        maxBytes: CATALOG_IMAGE_UPLOAD_MAX_BYTES,
+        allowedExtensions: CATALOG_IMAGE_ALLOWED_EXTENSIONS,
+        allowedMimeTypes: CATALOG_IMAGE_ALLOWED_MIME_TYPES,
+      }),
+    ),
+  )
   @ApiConsumes('multipart/form-data')
   @ApiBody({
     schema: {
@@ -163,6 +180,8 @@ export class CatalogController {
         file: {
           type: 'string',
           format: 'binary',
+          description:
+            'Allowed: .jpg, .jpeg, .png, .webp. Max size: 5 MB.',
         },
         altText: {
           type: 'string',

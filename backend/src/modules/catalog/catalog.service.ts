@@ -14,6 +14,12 @@ import {
 
 import { UserRole } from '../../common/enums/domain.enum';
 import { RequestActor } from '../../common/interfaces/request-actor.interface';
+import {
+  CATALOG_IMAGE_ALLOWED_EXTENSIONS,
+  CATALOG_IMAGE_ALLOWED_MIME_TYPES,
+  CATALOG_IMAGE_UPLOAD_MAX_BYTES,
+} from '../../common/upload/upload.constants';
+import { assertUploadMatchesRules } from '../../common/upload/upload.utils';
 import { AuditService } from '../audit/audit.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateProductCategoryDto } from './dto/create-product-category.dto';
@@ -27,6 +33,7 @@ type UploadedCatalogImageFile = {
   originalname: string;
   mimetype: string;
   buffer: Buffer;
+  size: number;
 };
 
 const productInclude = {
@@ -434,13 +441,13 @@ export class CatalogService {
     payload: UploadProductImageDto,
     actor?: RequestActor,
   ) {
-    if (!file?.buffer || !file.originalname) {
-      throw new BadRequestException('Image file is required.');
-    }
-
-    if (!file.mimetype.startsWith('image/')) {
-      throw new BadRequestException('Uploaded file must be an image.');
-    }
+    assertUploadMatchesRules(file, {
+      fileLabel: 'Catalog image',
+      maxBytes: CATALOG_IMAGE_UPLOAD_MAX_BYTES,
+      allowedExtensions: CATALOG_IMAGE_ALLOWED_EXTENSIONS,
+      allowedMimeTypes: CATALOG_IMAGE_ALLOWED_MIME_TYPES,
+    });
+    const upload = file as UploadedCatalogImageFile;
 
     const product = await this.prisma.product.findUnique({
       where: {
@@ -461,14 +468,14 @@ export class CatalogService {
 
     const relativeFilePath = this.buildProductImageRelativePath(
       product.id,
-      file.originalname,
+      upload.originalname,
     );
     const absoluteFilePath = resolve(process.cwd(), relativeFilePath);
 
     await mkdir(join(process.cwd(), 'uploads', 'catalog', product.id), {
       recursive: true,
     });
-    await writeFile(absoluteFilePath, file.buffer);
+    await writeFile(absoluteFilePath, upload.buffer);
 
     try {
       const image = await this.prisma.productImage.create({

@@ -696,6 +696,64 @@ describe('critical backend flows', { concurrency: false }, () => {
     assert.equal(productCardResponse.data.title, 'Catalog Hoodie');
   });
 
+  test('upload validation rejects unsupported employee import and catalog image files', async () => {
+    const { admin } = await bootstrapAdminAndLogin();
+    const adminHeaders = buildAdminHeaders(admin.id);
+
+    const invalidImportFormData = new FormData();
+    invalidImportFormData.append(
+      'file',
+      new Blob(['not-an-excel-workbook'], {
+        type: 'text/plain',
+      }),
+      'employees.txt',
+    );
+
+    const invalidImportResponse = await api('POST', '/api/employees/import', {
+      headers: adminHeaders,
+      formData: invalidImportFormData,
+    });
+
+    assertStatus(invalidImportResponse, 400);
+    assert.match(
+      getErrorMessage(invalidImportResponse.data),
+      /Unsupported employee import format/i,
+    );
+
+    const product = await prisma.product.create({
+      data: {
+        sku: 'UPLOAD-SKU-001',
+        title: 'Upload Test Product',
+        pricePoints: 15,
+        stockQty: 2,
+      },
+    });
+
+    const invalidImageFormData = new FormData();
+    invalidImageFormData.append(
+      'file',
+      new Blob(['not-an-image'], {
+        type: 'text/plain',
+      }),
+      'product.txt',
+    );
+
+    const invalidImageResponse = await api(
+      'POST',
+      `/api/catalog/products/${product.id}/images`,
+      {
+        headers: adminHeaders,
+        formData: invalidImageFormData,
+      },
+    );
+
+    assertStatus(invalidImageResponse, 400);
+    assert.match(
+      getErrorMessage(invalidImageResponse.data),
+      /Unsupported catalog image format/i,
+    );
+  });
+
   test('employee import supports partial success and provisions local accounts', async () => {
     const { admin } = await bootstrapAdminAndLogin();
     const adminHeaders = buildAdminHeaders(admin.id);
@@ -1238,6 +1296,22 @@ function assertStatus(response, expected) {
     expectedStatuses.includes(response.status),
     `Expected status ${expectedStatuses.join(' or ')}, received ${response.status}.\nResponse body: ${JSON.stringify(response.data)}`,
   );
+}
+
+function getErrorMessage(data) {
+  if (!data || typeof data !== 'object') {
+    return String(data ?? '');
+  }
+
+  if (typeof data.message === 'string') {
+    return data.message;
+  }
+
+  if (Array.isArray(data.message)) {
+    return data.message.join(' ');
+  }
+
+  return JSON.stringify(data);
 }
 
 function formatAppLogs() {

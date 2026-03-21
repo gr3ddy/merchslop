@@ -14,6 +14,12 @@ import {
 import * as XLSX from 'xlsx';
 
 import { RequestActor } from '../../common/interfaces/request-actor.interface';
+import {
+  EMPLOYEE_IMPORT_ALLOWED_EXTENSIONS,
+  EMPLOYEE_IMPORT_ALLOWED_MIME_TYPES,
+  EMPLOYEE_IMPORT_UPLOAD_MAX_BYTES,
+} from '../../common/upload/upload.constants';
+import { assertUploadMatchesRules } from '../../common/upload/upload.utils';
 import { AuditService } from '../audit/audit.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateEmployeeDto } from './dto/create-employee.dto';
@@ -48,7 +54,9 @@ type ParsedEmployeeImportRow = {
 
 type UploadedExcelFile = {
   originalname: string;
+  mimetype: string;
   buffer: Buffer;
+  size: number;
 };
 
 type UserProvisioningCandidate = {
@@ -97,15 +105,15 @@ export class EmployeesService {
     file: UploadedExcelFile | undefined,
     actor?: RequestActor,
   ) {
-    if (!file) {
-      throw new BadRequestException('Excel file is required for import.');
-    }
+    assertUploadMatchesRules(file, {
+      fileLabel: 'Employee import',
+      maxBytes: EMPLOYEE_IMPORT_UPLOAD_MAX_BYTES,
+      allowedExtensions: EMPLOYEE_IMPORT_ALLOWED_EXTENSIONS,
+      allowedMimeTypes: EMPLOYEE_IMPORT_ALLOWED_MIME_TYPES,
+    });
+    const upload = file as UploadedExcelFile;
 
-    if (!file.originalname.toLowerCase().endsWith('.xlsx')) {
-      throw new BadRequestException('Only .xlsx files are supported for import.');
-    }
-
-    const workbook = this.readWorkbook(file.buffer);
+    const workbook = this.readWorkbook(upload.buffer);
     const { sheetName, worksheet } = this.resolveWorksheet(workbook);
     const rows = XLSX.utils.sheet_to_json<unknown[]>(worksheet, {
       header: 1,
@@ -124,7 +132,7 @@ export class EmployeesService {
 
     const job = await this.prisma.importJob.create({
       data: {
-        fileName: file.originalname,
+        fileName: upload.originalname,
         status: ImportJobStatus.PROCESSING,
         rowsTotal: dataRows.length,
         initiatedById: actor?.userId ?? null,

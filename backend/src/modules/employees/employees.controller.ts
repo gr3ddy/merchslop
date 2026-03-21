@@ -23,13 +23,21 @@ import { DevActorHeaders } from '../../common/decorators/dev-actor-headers.decor
 import { Roles } from '../../common/decorators/roles.decorator';
 import { UserRole } from '../../common/enums/domain.enum';
 import { RequestActor } from '../../common/interfaces/request-actor.interface';
+import {
+  EMPLOYEE_IMPORT_ALLOWED_EXTENSIONS,
+  EMPLOYEE_IMPORT_ALLOWED_MIME_TYPES,
+  EMPLOYEE_IMPORT_UPLOAD_MAX_BYTES,
+} from '../../common/upload/upload.constants';
+import { createUploadMulterOptions } from '../../common/upload/upload.utils';
 import { CreateEmployeeDto } from './dto/create-employee.dto';
 import { UpdateEmployeeStatusDto } from './dto/update-employee-status.dto';
 import { EmployeesService } from './employees.service';
 
 type UploadedExcelFile = {
   originalname: string;
+  mimetype: string;
   buffer: Buffer;
+  size: number;
 };
 
 @ApiTags('employees')
@@ -59,7 +67,17 @@ export class EmployeesController {
   }
 
   @Post('import')
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(
+    FileInterceptor(
+      'file',
+      createUploadMulterOptions({
+        fileLabel: 'Employee import',
+        maxBytes: EMPLOYEE_IMPORT_UPLOAD_MAX_BYTES,
+        allowedExtensions: EMPLOYEE_IMPORT_ALLOWED_EXTENSIONS,
+        allowedMimeTypes: EMPLOYEE_IMPORT_ALLOWED_MIME_TYPES,
+      }),
+    ),
+  )
   @ApiConsumes('multipart/form-data')
   @ApiBody({
     schema: {
@@ -69,6 +87,8 @@ export class EmployeesController {
         file: {
           type: 'string',
           format: 'binary',
+          description:
+            'Allowed: .xlsx only. Max size: 2 MB.',
         },
       },
     },
